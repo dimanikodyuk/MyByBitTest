@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ByBit Trading Bot - Dashboard</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <h1>
+                🤖 ByBit Trading Bot
+                <span id="strategy-status" class="badge badge-open" style="font-size: 14px;">⏸️ Зупинено</span>
+            </h1>
+        </div>
+
+        <!-- Statistics -->
+        <div class="stats-grid">
+            <div class="stat-card">
+                <h3>💰 Баланс</h3>
+                <div class="stat-value" id="total-balance">$0</div>
+            </div>
+            <div class="stat-card">
+                <h3>📈 Загальний PnL</h3>
+                <div class="stat-value" id="total-pnl">$0</div>
+                <div class="stat-change" id="pnl-change"></div>
+            </div>
+            <div class="stat-card">
+                <h3>🎯 Win Rate</h3>
+                <div class="stat-value" id="win-rate">0%</div>
+            </div>
+            <div class="stat-card">
+                <h3>📊 Всього угод</h3>
+                <div class="stat-value" id="total-trades">0</div>
+            </div>
+        </div>
+
+        <!-- Controls -->
+        <div class="controls">
+            <button class="btn btn-primary" onclick="startStrategy()">▶️ Запустити стратегію</button>
+            <button class="btn btn-danger" onclick="stopStrategy()">⏸️ Зупинити стратегію</button>
+            <button class="btn btn-warning" onclick="resetSimulation()">🔄 Скинути симуляцію</button>
+        </div>
+
+        <!-- Main Chart -->
+        <div class="chart-container">
+            <div class="chart-header">
+                <h3>📊 Ринковий графік</h3>
+                <select id="chart-symbol" class="chart-select" onchange="loadChart()">
+                    <option value="BTCUSDT">BTC/USDT</option>
+                    <option value="ETHUSDT">ETH/USDT</option>
+                    <option value="SOLUSDT">SOL/USDT</option>
+                    <option value="BNBUSDT">BNB/USDT</option>
+                    <option value="ADAUSDT">ADA/USDT</option>
+                </select>
+            </div>
+            <div id="price-chart" style="height: 500px;"></div>
+        </div>
+
+        <!-- Orders Table -->
+        <div class="table-container">
+            <h3>📋 Угоди</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Дата/Час</th>
+                        <th>Тип</th>
+                        <th>Пара</th>
+                        <th>Статус</th>
+                        <th>Ціна входу</th>
+                        <th>Кількість</th>
+                        <th>PnL</th>
+                        <th>Дії</th>
+                    </tr>
+                </thead>
+                <tbody id="orders-table-body"></tbody>
+            </table>
+        </div>
+
+        <!-- Predictions Table -->
+        <div class="table-container">
+            <h3>🔮 Прогнози</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Пара</th>
+                        <th>Таймфрейм</th>
+                        <th>Напрямок</th>
+                        <th>Цільова ціна</th>
+                        <th>Перевірка до</th>
+                        <th>Статус</th>
+                    </tr>
+                </thead>
+                <tbody id="predictions-table-body"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Order Chart Modal -->
+    <div id="orderChartModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>📈 Графік угоди</h3>
+                <span class="close">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div id="order-chart-container" style="height: 400px;"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-primary" onclick="$('#orderChartModal').hide()">Закрити</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/dashboard.js"></script>
+</body>
+</html>
