@@ -1,6 +1,6 @@
 """
 FastAPI веб-інтерфейс для автотрейдинг бота
-Розширена версія: Web Push сповіщення, покращена аналітика
+Повна версія: налаштування, прогнози, графіки, логі, аналітика
 """
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -42,8 +42,20 @@ CONFIG_PATH = Path(__file__).parent.parent / "config.yaml"
 
 KYIV_TZ = pytz.timezone('Europe/Kiev')
 
+
 def get_current_time():
     return datetime.now(KYIV_TZ)
+
+
+def make_aware(dt):
+    if dt.tzinfo is None:
+        return KYIV_TZ.localize(dt)
+    return dt.astimezone(KYIV_TZ)
+
+
+def set_order_manager(om):
+    global order_manager_ref
+    order_manager_ref = om
 
 
 async def get_next_forecast_time():
@@ -55,13 +67,7 @@ async def get_next_forecast_time():
     return next_time.isoformat()
 
 
-def set_order_manager(om):
-    global order_manager_ref
-    order_manager_ref = om
-
-
 async def get_active_forecasts():
-    """Отримання активних прогнозів з БД"""
     db = SessionLocal()
     try:
         now = get_current_time()
@@ -84,20 +90,22 @@ async def get_active_forecasts():
                 "target_price": f.target_price,
                 "current_price": f.current_price,
                 "confidence": f.confidence,
-                "created_at": f.created_at.isoformat(),
-                "expires_at": f.expires_at.isoformat(),
-                "time_remaining": max(0, (f.expires_at - now).total_seconds()),
+                "created_at": make_aware(f.created_at).isoformat(),
+                "expires_at": make_aware(f.expires_at).isoformat(),
+                "time_remaining": max(0, (make_aware(f.expires_at) - now).total_seconds()),
                 "status": f.status,
                 "profit_potential": ((f.target_price - f.entry_price) / f.entry_price) * 100
             }
             for f in active
         ]
+    except Exception as e:
+        logger.error(f"Помилка отримання прогнозів: {e}")
+        return []
     finally:
         db.close()
 
 
 async def create_forecast_internal(pair, signal_type, entry_price, target_price, confidence):
-    """Створення прогнозу зі збереженням в БД"""
     db = SessionLocal()
     try:
         forecast_id = datetime.now().timestamp()
@@ -143,13 +151,6 @@ async def create_forecast_internal(pair, signal_type, entry_price, target_price,
             "profit_potential": ((target_price - entry_price) / entry_price) * 100
         }
 
-        # Web Push сповіщення
-        await send_push_notification(
-            f"Новий прогноз {pair}",
-            f"{signal_type} сигнал! Ціль: ${target_price:.0f}",
-            {"forecast_id": forecast_id}
-        )
-
         for ws in active_websockets:
             try:
                 await ws.send_json({
@@ -171,7 +172,6 @@ async def create_forecast_internal(pair, signal_type, entry_price, target_price,
 
 
 async def update_forecast_prices():
-    """Оновлення поточних цін для активних прогнозів"""
     from exchange.bybit_client import BybitClient
     exchange = BybitClient()
 
@@ -183,47 +183,11 @@ async def update_forecast_prices():
                 current_price = exchange.get_current_price(forecast.pair)
                 if current_price:
                     forecast.current_price = current_price
-
-                    if forecast.signal_type == "LONG" and current_price >= forecast.target_price:
-                        forecast.status = "completed"
-                        forecast.result = "success"
-                        await send_push_notification(
-                            f"Прогноз {forecast.pair} виконано!",
-                            f"Ціль досягнута! Прибуток: +{((current_price - forecast.entry_price) / forecast.entry_price * 100):.1f}%"
-                        )
-                    elif forecast.signal_type == "SHORT" and current_price <= forecast.target_price:
-                        forecast.status = "completed"
-                        forecast.result = "success"
-                        await send_push_notification(
-                            f"Прогноз {forecast.pair} виконано!",
-                            f"Ціль досягнута! Прибуток: +{((forecast.entry_price - current_price) / forecast.entry_price * 100):.1f}%"
-                        )
-                db.commit()
+                    db.commit()
             except Exception as e:
                 logger.error(f"Помилка оновлення ціни для {forecast.pair}: {e}")
     finally:
         db.close()
-
-
-async def send_push_notification(title: str, body: str, data: dict = None):
-    """Відправка Web Push сповіщення всім підписникам"""
-    for ws in active_websockets:
-        try:
-            await ws.send_json({
-                "type": "notification",
-                "title": title,
-                "body": body,
-                "data": data
-            })
-        except:
-            pass
-
-    # Також відправляємо через Telegram якщо є
-    if order_manager_ref and order_manager_ref.telegram:
-        try:
-            await order_manager_ref.telegram.send_message(f"🔔 {title}\n{body}")
-        except:
-            pass
 
 
 # ============ WEBSOCKET ============
@@ -253,8 +217,6 @@ async def websocket_endpoint(websocket: WebSocket):
                         "forecasts": forecasts,
                         "next_forecast": next_forecast_time,
                         "server_time": get_current_time().isoformat(),
-                        "profit_factor": stats.get('profit_factor', 0),
-                        "max_drawdown": stats.get('max_drawdown', 0)
                     })
                 finally:
                     db.close()
@@ -265,345 +227,6 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
 # ============ API ЕНДПОІНТИ ============
-@app.get("/api/chart/pnl")
-async def get_pnl_chart_data():
-    """Графік PnL за період"""
-    db = SessionLocal()
-    db_ops = DatabaseOperations(db)
-    try:
-        trades = db_ops.get_trades_history(limit=1000, is_paper=True)
-
-        if not trades:
-            fig = go.Figure()
-            fig.update_layout(title="Немає даних для відображення", template="plotly_dark", height=400)
-            return JSONResponse(content=json.loads(json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)))
-
-        # Групуємо по днях
-        daily_pnl = {}
-        for trade in trades:
-            if trade.closed_at:
-                date = trade.closed_at.date().isoformat()
-                daily_pnl[date] = daily_pnl.get(date, 0) + trade.pnl
-
-        pnl_data = [{"date": date, "pnl": pnl} for date, pnl in sorted(daily_pnl.items())]
-
-        # Кумулятивний PnL
-        cumulative = 0
-        for item in pnl_data:
-            cumulative += item["pnl"]
-            item["cumulative"] = cumulative
-
-        fig = go.Figure()
-
-        # Стовпці (денний PnL)
-        fig.add_trace(go.Bar(
-            x=[d["date"] for d in pnl_data],
-            y=[d["pnl"] for d in pnl_data],
-            name='Денний PnL',
-            marker_color=['#00ff88' if d["pnl"] > 0 else '#ff4757' for d in pnl_data]
-        ))
-
-        # Лінія (кумулятивний PnL)
-        fig.add_trace(go.Scatter(
-            x=[d["date"] for d in pnl_data],
-            y=[d["cumulative"] for d in pnl_data],
-            name='Кумулятивний PnL',
-            line=dict(color='#00d4ff', width=3)
-        ))
-
-        fig.update_layout(
-            title="Динаміка PnL",
-            xaxis_title="Дата",
-            yaxis_title="PnL (USDT)",
-            template="plotly_dark",
-            height=400,
-            paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(26,26,46,0.5)',
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-        )
-        return JSONResponse(content=json.loads(json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)))
-    except Exception as e:
-        logger.error(f"Помилка створення графіку PnL: {e}")
-        fig = go.Figure()
-        fig.update_layout(title="Немає даних для відображення", template="plotly_dark", height=400)
-        return JSONResponse(content=json.loads(json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)))
-    finally:
-        db.close()
-
-
-@app.get("/api/chart/{pair}")
-async def get_chart(pair: str, timeframe: str = "1h", limit: int = 200, highlight_trade: int = None):
-    """Отримання свічкового графіку з точками входу/виходу"""
-    from exchange.bybit_client import BybitClient
-    import pandas_ta as ta
-
-    exchange = BybitClient()
-    df = exchange.get_klines(pair, timeframe, limit)
-
-    if df is None or df.empty:
-        raise HTTPException(status_code=404, detail="Дані не знайдено")
-
-    # Розраховуємо EMA
-    df['EMA_20'] = ta.ema(df['close'], length=20)
-    df['EMA_50'] = ta.ema(df['close'], length=50)
-    df['EMA_200'] = ta.ema(df['close'], length=200)
-
-    # Отримуємо угоди для цієї пари
-    db = SessionLocal()
-    db_ops = DatabaseOperations(db)
-    try:
-        trades = db_ops.get_trades_history(limit=500, is_paper=True)
-        pair_trades = [t for t in trades if t.pair == pair]
-
-        # Якщо потрібно підсвітити конкретну угоду
-        highlighted_trade = None
-        if highlight_trade:
-            for t in pair_trades:
-                if t.id == highlight_trade:
-                    highlighted_trade = t
-                    break
-    finally:
-        db.close()
-
-    # Підготовка даних для точок входу/виходу
-    entry_points = []
-    exit_points = []
-    entry_colors = []
-    entry_texts = []
-    exit_texts = []
-
-    # Розміри точок (більші для підсвіченої угоди)
-    entry_sizes = []
-    exit_sizes = []
-
-    for trade in pair_trades:
-        is_highlighted = (highlighted_trade and trade.id == highlighted_trade.id)
-
-        # Розмір точки: 16 для підсвіченої, 10 для звичайної
-        size = 16 if is_highlighted else 10
-
-        # Точка входу
-        entry_time = trade.opened_at
-        entry_price = trade.entry_price
-        entry_points.append((entry_time, entry_price))
-        entry_sizes.append(size)
-
-        if trade.side.value == "BUY":
-            entry_colors.append("green")
-            entry_texts.append(f"ВХІД LONG<br>Ціна: ${entry_price:.0f}<br>Кількість: {trade.quantity}")
-        else:
-            entry_colors.append("red")
-            entry_texts.append(f"ВХІД SHORT<br>Ціна: ${entry_price:.0f}<br>Кількість: {trade.quantity}")
-
-        # Точка виходу
-        if trade.closed_at and trade.exit_price:
-            exit_time = trade.closed_at
-            exit_price = trade.exit_price
-            exit_points.append((exit_time, exit_price))
-            exit_sizes.append(size)
-            pnl_text = f"+${trade.pnl:.2f}" if trade.pnl >= 0 else f"-${abs(trade.pnl):.2f}"
-            exit_texts.append(f"ВИХІД<br>Ціна: ${exit_price:.0f}<br>PnL: {pnl_text}")
-
-    # Створюємо графік
-    fig = go.Figure()
-
-    # Свічковий графік
-    fig.add_trace(go.Candlestick(
-        x=df['timestamp'],
-        open=df['open'],
-        high=df['high'],
-        low=df['low'],
-        close=df['close'],
-        name='Ціна',
-        showlegend=True
-    ))
-
-    # EMA лінії
-    fig.add_trace(go.Scatter(
-        x=df['timestamp'], y=df['EMA_20'],
-        name='EMA 20', line=dict(color='#f39c12', width=1.5), opacity=0.8
-    ))
-    fig.add_trace(go.Scatter(
-        x=df['timestamp'], y=df['EMA_50'],
-        name='EMA 50', line=dict(color='#00d4ff', width=1.5), opacity=0.8
-    ))
-    fig.add_trace(go.Scatter(
-        x=df['timestamp'], y=df['EMA_200'],
-        name='EMA 200', line=dict(color='#ff4757', width=1.5), opacity=0.8
-    ))
-
-    # Точки входу
-    if entry_points:
-        fig.add_trace(go.Scatter(
-            x=[p[0] for p in entry_points],
-            y=[p[1] for p in entry_points],
-            mode='markers',
-            name='Входи',
-            marker=dict(
-                size=entry_sizes,
-                color=entry_colors,
-                symbol='triangle-up',
-                line=dict(width=2, color='white')
-            ),
-            text=entry_texts,
-            hoverinfo='text',
-            hovertemplate='%{text}<extra></extra>'
-        ))
-
-    # Точки виходу
-    if exit_points:
-        fig.add_trace(go.Scatter(
-            x=[p[0] for p in exit_points],
-            y=[p[1] for p in exit_points],
-            mode='markers',
-            name='Виходи',
-            marker=dict(
-                size=exit_sizes,
-                color='white',
-                symbol='circle',
-                line=dict(width=2, color='black')
-            ),
-            text=exit_texts,
-            hoverinfo='text',
-            hovertemplate='%{text}<extra></extra>'
-        ))
-
-    # Якщо є підсвічена угода, додаємо лінію між входом і виходом
-    if highlighted_trade and highlighted_trade.closed_at and highlighted_trade.exit_price:
-        fig.add_trace(go.Scatter(
-            x=[highlighted_trade.opened_at, highlighted_trade.closed_at],
-            y=[highlighted_trade.entry_price, highlighted_trade.exit_price],
-            mode='lines',
-            name='Угода',
-            line=dict(
-                color='#00d4ff',
-                width=3,
-                dash='dash'
-            ),
-            hoverinfo='text',
-            text=f'Вхід: ${highlighted_trade.entry_price:.0f}<br>Вихід: ${highlighted_trade.exit_price:.0f}<br>PnL: ${highlighted_trade.pnl:.2f}'
-        ))
-
-    fig.update_layout(
-        title=f"{pair} - Свічковий графік з точками входу/виходу",
-        xaxis_title="Час",
-        yaxis_title="Ціна (USDT)",
-        template="plotly_dark",
-        height=600,
-        margin=dict(l=50, r=50, t=50, b=50),
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(26,26,46,0.5)',
-        xaxis_rangeslider_visible=False,
-        hovermode='closest',
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="right",
-            x=1
-        )
-    )
-
-    return JSONResponse(content=json.loads(json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)))
-
-
-@app.post("/api/test/trade")
-async def create_test_trade():
-    """Створення тестової угоди для перевірки графіка"""
-    from db.models import OrderSide, OrderStatus
-    from datetime import datetime, timedelta
-    import random
-
-    db = SessionLocal()
-    try:
-        # Створюємо тестову угоду LONG
-        now = datetime.now()
-        entry_price = 43000 + random.randint(-500, 500)
-        exit_price = entry_price * (1 + random.uniform(0.005, 0.03))  # Випадковий прибуток
-
-        test_trade = Trade(
-            pair="BTCUSDT",
-            side=OrderSide.BUY,
-            entry_price=entry_price,
-            exit_price=exit_price,
-            quantity=0.001,
-            pnl=(exit_price - entry_price) * 0.001,
-            pnl_percent=((exit_price - entry_price) / entry_price) * 100,
-            is_paper=1,
-            status=OrderStatus.CLOSED,
-            opened_at=now - timedelta(days=random.randint(1, 5)),
-            closed_at=now - timedelta(hours=random.randint(1, 48)),
-            take_profit=entry_price * 1.02,
-            stop_loss=entry_price * 0.98
-        )
-        db.add(test_trade)
-
-        # Створюємо відкриту угоду
-        open_entry = 43500 + random.randint(-300, 300)
-        open_trade = Trade(
-            pair="BTCUSDT",
-            side=OrderSide.BUY if random.random() > 0.5 else OrderSide.SELL,
-            entry_price=open_entry,
-            quantity=0.002,
-            is_paper=1,
-            status=OrderStatus.PENDING,
-            opened_at=now - timedelta(hours=random.randint(1, 12)),
-            take_profit=open_entry * 1.02,
-            stop_loss=open_entry * 0.98
-        )
-        db.add(open_trade)
-
-        db.commit()
-
-        return {
-            "status": "success",
-            "message": "Створено тестові угоди",
-            "closed_trade": {
-                "entry": test_trade.entry_price,
-                "exit": test_trade.exit_price,
-                "pnl": test_trade.pnl
-            },
-            "open_trade": {
-                "entry": open_trade.entry_price,
-                "side": "LONG" if open_trade.side == OrderSide.BUY else "SHORT"
-            }
-        }
-    except Exception as e:
-        db.rollback()
-        return {"status": "error", "message": str(e)}
-    finally:
-        db.close()
-
-
-@app.delete("/api/test/trades")
-async def clear_test_trades():
-    """Видалення всіх тестових угод (paper trading)"""
-    db = SessionLocal()
-    try:
-        # Видаляємо тільки paper угоди (is_paper=1)
-        db.query(Trade).filter(Trade.is_paper == 1).delete()
-        db.commit()
-
-        # Скидаємо баланс
-        from db.operations import DatabaseOperations
-        db_ops = DatabaseOperations(db)
-        db_ops.reset_paper_balance(100.0)
-
-        return {"status": "success", "message": "Тестові угоди видалено, баланс скинуто"}
-    except Exception as e:
-        db.rollback()
-        return {"status": "error", "message": str(e)}
-    finally:
-        db.close()
-
-
-@app.get("/api/analysis/{pair}")
-async def get_market_analysis(pair: str):
-    """Ринковий аналіз для пари"""
-    if order_manager_ref:
-        analysis = order_manager_ref.analyze_market(pair)
-        return analysis
-    return {"error": "Order manager not available"}
 
 @app.get("/api/status")
 async def get_status():
@@ -612,10 +235,16 @@ async def get_status():
     try:
         next_forecast = await get_next_forecast_time()
         stats = db_ops.get_stats(is_paper=True)
+        balance = db_ops.get_balance("USDT", is_paper=True)
+
+        if balance < 10:
+            db_ops.reset_paper_balance(100.0)
+            balance = 100.0
+
         return {
             "status": "running" if order_manager_ref and order_manager_ref.running else "stopped",
             "mode": config.bot_mode,
-            "balance": db_ops.get_balance("USDT", is_paper=True),
+            "balance": balance,
             "open_trades": len(db_ops.get_open_trades(is_paper=True)),
             "total_trades": stats['total_trades'],
             "win_rate": stats['win_rate'],
@@ -670,8 +299,7 @@ async def get_open_trades():
                 "entry_price": t.entry_price,
                 "quantity": t.quantity,
                 "take_profit": t.take_profit,
-                "stop_loss": t.stop_loss,
-                "current_pnl": 0
+                "stop_loss": t.stop_loss
             }
             for t in trades
         ]
@@ -727,81 +355,125 @@ async def delete_all_forecasts():
         db.close()
 
 
-@app.get("/api/stats/advanced")
-async def get_advanced_stats():
-    """Покращена аналітика"""
+@app.get("/api/chart/pnl")
+async def get_pnl_chart_data():
     db = SessionLocal()
     db_ops = DatabaseOperations(db)
     try:
         trades = db_ops.get_trades_history(limit=1000, is_paper=True)
 
-        if not trades or len(trades) < 5:
-            return {
-                "total_trades": 0,
-                "win_rate": 0,
-                "profit_factor": 0,
-                "max_drawdown": 0,
-                "sharpe_ratio": 0,
-                "expectancy": 0,
-                "kelly_criterion": 0
-            }
+        if not trades:
+            fig = go.Figure()
+            fig.update_layout(title="Немає даних для відображення", template="plotly_dark", height=400)
+            return JSONResponse(content=json.loads(json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)))
 
-        # Розрахунок метрик
-        wins = [t for t in trades if t.pnl > 0]
-        losses = [t for t in trades if t.pnl < 0]
+        daily_pnl = {}
+        for trade in trades:
+            if trade.closed_at:
+                date = trade.closed_at.date().isoformat()
+                daily_pnl[date] = daily_pnl.get(date, 0) + trade.pnl
 
-        win_rate = len(wins) / len(trades) * 100 if trades else 0
-        avg_win = sum(t.pnl for t in wins) / len(wins) if wins else 0
-        avg_loss = abs(sum(t.pnl for t in losses) / len(losses)) if losses else 0
-
-        # Profit Factor
-        gross_profit = sum(t.pnl for t in wins) if wins else 0
-        gross_loss = abs(sum(t.pnl for t in losses)) if losses else 1
-        profit_factor = gross_profit / gross_loss if gross_loss > 0 else 0
-
-        # Max Drawdown
+        pnl_data = [{"date": date, "pnl": pnl} for date, pnl in sorted(daily_pnl.items())]
         cumulative = 0
-        max_drawdown = 0
-        peak = 0
-        for t in trades:
-            cumulative += t.pnl
-            if cumulative > peak:
-                peak = cumulative
-            drawdown = peak - cumulative
-            if drawdown > max_drawdown:
-                max_drawdown = drawdown
+        for item in pnl_data:
+            cumulative += item["pnl"]
+            item["cumulative"] = cumulative
 
-        # Sharpe Ratio (спрощено)
-        returns = [t.pnl for t in trades]
-        avg_return = sum(returns) / len(returns) if returns else 0
-        std_return = (sum((r - avg_return) ** 2 for r in returns) / len(returns)) ** 0.5 if returns else 1
-        sharpe_ratio = (avg_return / std_return) * (252 ** 0.5) if std_return > 0 else 0
-
-        # Kelly Criterion
-        b = avg_win / avg_loss if avg_loss > 0 else 1
-        p = win_rate / 100
-        q = 1 - p
-        kelly = (p * b - q) / b if b > 0 else 0
-        kelly = max(0, min(kelly, 0.25))
-
-        return {
-            "total_trades": len(trades),
-            "win_trades": len(wins),
-            "loss_trades": len(losses),
-            "win_rate": round(win_rate, 2),
-            "avg_win": round(avg_win, 2),
-            "avg_loss": round(avg_loss, 2),
-            "profit_factor": round(profit_factor, 2),
-            "max_drawdown": round(max_drawdown, 2),
-            "sharpe_ratio": round(sharpe_ratio, 2),
-            "expectancy": round((win_rate / 100 * avg_win - (1 - win_rate / 100) * avg_loss), 2),
-            "kelly_criterion": round(kelly * 100, 2)
-        }
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=[d["date"] for d in pnl_data],
+            y=[d["pnl"] for d in pnl_data],
+            name='Денний PnL',
+            marker_color=['#00ff88' if d["pnl"] > 0 else '#ff4757' for d in pnl_data]
+        ))
+        fig.add_trace(go.Scatter(
+            x=[d["date"] for d in pnl_data],
+            y=[d["cumulative"] for d in pnl_data],
+            name='Кумулятивний PnL',
+            line=dict(color='#00d4ff', width=3)
+        ))
+        fig.update_layout(
+            title="Динаміка PnL",
+            xaxis_title="Дата",
+            yaxis_title="PnL (USDT)",
+            template="plotly_dark",
+            height=400,
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(26,26,46,0.5)'
+        )
+        return JSONResponse(content=json.loads(json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)))
     except Exception as e:
-        logger.error(f"Помилка розрахунку статистики: {e}")
-        return {"error": str(e)}
+        logger.error(f"Помилка створення графіку PnL: {e}")
+        fig = go.Figure()
+        fig.update_layout(title="Немає даних для відображення", template="plotly_dark", height=400)
+        return JSONResponse(content=json.loads(json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)))
     finally:
         db.close()
+
+
+@app.get("/api/chart/{pair}")
+async def get_chart(pair: str, timeframe: str = "1h", limit: int = 200):
+    from exchange.bybit_client import BybitClient
+    import pandas_ta as ta
+
+    exchange = BybitClient()
+    df = exchange.get_klines(pair, timeframe, limit)
+
+    if df is None or df.empty:
+        raise HTTPException(status_code=404, detail="Дані не знайдено")
+
+    df['EMA_20'] = ta.ema(df['close'], length=20)
+    df['EMA_50'] = ta.ema(df['close'], length=50)
+    df['EMA_200'] = ta.ema(df['close'], length=200)
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Candlestick(
+        x=df['timestamp'],
+        open=df['open'],
+        high=df['high'],
+        low=df['low'],
+        close=df['close'],
+        name='Ціна',
+        showlegend=True
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=df['timestamp'], y=df['EMA_20'],
+        name='EMA 20', line=dict(color='#f39c12', width=1.5)
+    ))
+    fig.add_trace(go.Scatter(
+        x=df['timestamp'], y=df['EMA_50'],
+        name='EMA 50', line=dict(color='#00d4ff', width=1.5)
+    ))
+    fig.add_trace(go.Scatter(
+        x=df['timestamp'], y=df['EMA_200'],
+        name='EMA 200', line=dict(color='#ff4757', width=1.5)
+    ))
+
+    fig.update_layout(
+        title=f"{pair} - Свічковий графік з EMA",
+        xaxis_title="Час",
+        yaxis_title="Ціна (USDT)",
+        template="plotly_dark",
+        height=500,
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(26,26,46,0.5)',
+        xaxis_rangeslider_visible=False
+    )
+
+    return JSONResponse(content=json.loads(json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)))
+
+
+@app.get("/api/analysis/{pair}")
+async def get_market_analysis(pair: str):
+    if order_manager_ref and hasattr(order_manager_ref, 'analyze_market'):
+        try:
+            analysis = order_manager_ref.analyze_market(pair)
+            return analysis
+        except Exception as e:
+            return {"error": str(e)}
+    return {"error": "Order manager not available"}
 
 
 @app.get("/api/settings")
@@ -812,7 +484,6 @@ async def get_settings():
             "base_timeframe": config.get('trading.base_timeframe', '5m'),
             "signal_check_interval": config.get('trading.signal_check_interval', 30),
             "trading_hours": config.get('trading.trading_hours', {"enabled": False, "start": "09:00", "end": "21:00"}),
-            "news_filter": config.get('trading.news_filter', {"enabled": False})
         },
         "strategy": {
             "ema_fast": config.get('strategy.ema_fast', 50),
@@ -823,15 +494,12 @@ async def get_settings():
             "take_profit_percent": config.get('strategy.take_profit_percent', 2.0),
             "stop_loss_percent": config.get('strategy.stop_loss_percent', 1.5),
             "use_bollinger": config.get('strategy.use_bollinger', True),
-            "use_ichimoku": config.get('strategy.use_ichimoku', False),
-            "use_fibonacci": config.get('strategy.use_fibonacci', True)
         },
         "risk": {
             "risk_per_trade": config.get('risk.risk_per_trade', 2.0),
             "max_open_trades": config.get('risk.max_open_trades', 5),
             "max_daily_loss": config.get('risk.max_daily_loss', 5.0),
             "use_kelly": config.get('risk.use_kelly', True),
-            "kelly_window": config.get('risk.kelly_window', 50)
         },
         "notifications": {
             "web_push": config.get('web.enable_web_push', True),
@@ -929,6 +597,125 @@ async def start_bot():
     return {"status": "error", "message": "Order manager not available"}
 
 
+@app.post("/api/test/trade")
+async def create_test_trade():
+    from db.models import OrderSide, OrderStatus
+    import random
+
+    db = SessionLocal()
+    try:
+        now = datetime.now()
+        entry_price = 43000 + random.randint(-500, 500)
+        exit_price = entry_price * (1 + random.uniform(0.005, 0.03))
+
+        test_trade = Trade(
+            pair="BTCUSDT",
+            side=OrderSide.BUY,
+            entry_price=entry_price,
+            exit_price=exit_price,
+            quantity=0.001,
+            pnl=(exit_price - entry_price) * 0.001,
+            pnl_percent=((exit_price - entry_price) / entry_price) * 100,
+            is_paper=1,
+            status=OrderStatus.CLOSED,
+            opened_at=now - timedelta(days=random.randint(1, 5)),
+            closed_at=now - timedelta(hours=random.randint(1, 48)),
+            take_profit=entry_price * 1.02,
+            stop_loss=entry_price * 0.98
+        )
+        db.add(test_trade)
+        db.commit()
+
+        return {"status": "success", "closed_trade": {"entry": test_trade.entry_price, "exit": test_trade.exit_price, "pnl": test_trade.pnl}}
+    except Exception as e:
+        db.rollback()
+        return {"status": "error", "message": str(e)}
+    finally:
+        db.close()
+
+
+@app.delete("/api/test/trades")
+async def clear_test_trades():
+    db = SessionLocal()
+    try:
+        db.query(Trade).filter(Trade.is_paper == 1).delete()
+        db.commit()
+
+        from db.operations import DatabaseOperations
+        db_ops = DatabaseOperations(db)
+        db_ops.reset_paper_balance(100.0)
+
+        return {"status": "success", "message": "Тестові угоди видалено"}
+    except Exception as e:
+        db.rollback()
+        return {"status": "error", "message": str(e)}
+    finally:
+        db.close()
+
+
+@app.get("/api/stats/advanced")
+async def get_advanced_stats():
+    db = SessionLocal()
+    db_ops = DatabaseOperations(db)
+    try:
+        trades = db_ops.get_trades_history(limit=1000, is_paper=True)
+
+        if not trades or len(trades) < 5:
+            return {"total_trades": 0, "win_rate": 0, "profit_factor": 0, "max_drawdown": 0, "sharpe_ratio": 0, "expectancy": 0, "kelly_criterion": 0}
+
+        wins = [t for t in trades if t.pnl > 0]
+        losses = [t for t in trades if t.pnl < 0]
+
+        win_rate = len(wins) / len(trades) * 100 if trades else 0
+        avg_win = sum(t.pnl for t in wins) / len(wins) if wins else 0
+        avg_loss = abs(sum(t.pnl for t in losses) / len(losses)) if losses else 0
+
+        gross_profit = sum(t.pnl for t in wins) if wins else 0
+        gross_loss = abs(sum(t.pnl for t in losses)) if losses else 1
+        profit_factor = gross_profit / gross_loss if gross_loss > 0 else 0
+
+        cumulative = 0
+        max_drawdown = 0
+        peak = 0
+        for t in trades:
+            cumulative += t.pnl
+            if cumulative > peak:
+                peak = cumulative
+            drawdown = peak - cumulative
+            if drawdown > max_drawdown:
+                max_drawdown = drawdown
+
+        returns = [t.pnl for t in trades]
+        avg_return = sum(returns) / len(returns) if returns else 0
+        std_return = (sum((r - avg_return) ** 2 for r in returns) / len(returns)) ** 0.5 if returns else 1
+        sharpe_ratio = (avg_return / std_return) * (252 ** 0.5) if std_return > 0 else 0
+
+        b = avg_win / avg_loss if avg_loss > 0 else 1
+        p = win_rate / 100
+        q = 1 - p
+        kelly = (p * b - q) / b if b > 0 else 0
+        kelly = max(0, min(kelly, 0.25))
+
+        return {
+            "total_trades": len(trades),
+            "win_trades": len(wins),
+            "loss_trades": len(losses),
+            "win_rate": round(win_rate, 2),
+            "avg_win": round(avg_win, 2),
+            "avg_loss": round(avg_loss, 2),
+            "profit_factor": round(profit_factor, 2),
+            "max_drawdown": round(max_drawdown, 2),
+            "sharpe_ratio": round(sharpe_ratio, 2),
+            "expectancy": round((win_rate/100 * avg_win - (1-win_rate/100) * avg_loss), 2),
+            "kelly_criterion": round(kelly * 100, 2)
+        }
+    except Exception as e:
+        logger.error(f"Помилка розрахунку статистики: {e}")
+        return {"error": str(e)}
+    finally:
+        db.close()
+
+
 # ============ WEB PUSH ============
 
 @app.post("/api/push/subscribe")
@@ -937,7 +724,7 @@ async def push_subscribe(subscription: dict):
     return {"status": "success"}
 
 
-# ============ HTML СТОРІНКА ============
+# ============ ГОЛОВНА СТОРІНКА ============
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
@@ -945,9 +732,9 @@ async def root():
 <html lang="uk">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AutoTrading Bot v3.0 - Розширений дашборд</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>AutoTrading Bot v3.0</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <script src="https://cdn.plot.ly/plotly-3.0.1.min.js"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -1025,38 +812,115 @@ async def root():
     <div class="container">
         <!-- ДАШБОРД -->
         <div id="tab-dashboard" class="tab active">
-            <div class="next-forecast">
-                <div style="font-size:14px; color:#888;">⏰ Наступний прогноз через</div>
-                <div class="timer-big" id="nextForecastTimer">--:--:--</div>
-            </div>
-            <div class="stats-grid">
-                <div class="stat-card"><div class="stat-value" id="balance">$0</div><div class="stat-label">Баланс (USDT)</div></div>
-                <div class="stat-card"><div class="stat-value" id="openTrades">0</div><div class="stat-label">Активні позиції</div></div>
-                <div class="stat-card"><div class="stat-value" id="totalPnL">$0</div><div class="stat-label">Загальний PnL</div></div>
-                <div class="stat-card"><div class="stat-value" id="winRate">0%</div><div class="stat-label">Відсоток успіху</div></div>
-                <div class="stat-card"><div class="stat-value" id="dailyPnL">$0</div><div class="stat-label">Сьогодні</div></div>
-                <div class="stat-card"><div class="stat-value" id="totalTrades">0</div><div class="stat-label">Всього угод</div></div>
-            </div>
-            <div class="stats-grid">
-                <div class="stat-card"><div class="stat-value" id="profitFactor">0</div><div class="stat-label">Profit Factor</div></div>
-                <div class="stat-card"><div class="stat-value" id="maxDrawdown">0</div><div class="stat-label">Max Drawdown ($)</div></div>
-                <div class="stat-card"><div class="stat-value" id="avgPnL">$0</div><div class="stat-label">Середній PnL</div></div>
-                <div class="stat-card"><div class="stat-value" id="kelly">0%</div><div class="stat-label">Kelly Criterion</div></div>
-            </div>
-            <div class="card"><div class="card-header"><h3>📈 Відкриті позиції</h3></div><div class="table-wrapper"><table><thead><tr><th>Пара</th><th>Сторона</th><th>Вхід</th><th>Кількість</th><th>TP</th><th>SL</th></tr></thead><tbody id="openTradesBody"><tr><td colspan="6" style="text-align:center">Завантаження......</tbody></table></div></div>
-            <div class="card"><div class="card-header"><h3>📜 Історія угод</h3></div><div class="table-wrapper"><table><thead><tr><th>Час</th><th>Пара</th><th>Сторона</th><th>Вхід</th><th>Вихід</th><th>PnL</th></tr></thead><tbody id="tradesBody">...</tbody></table></div></div>
-            <div class="server-time" id="serverTime"></div>
+    <div class="next-forecast">
+        <div style="font-size:14px; color:#888;">⏰ Наступний прогноз через</div>
+        <div class="timer-big" id="nextForecastTimer">--:--:--</div>
+    </div>
+    <div class="stats-grid">
+        <div class="stat-card"><div class="stat-value" id="balance">$0</div><div class="stat-label">Баланс (USDT)</div></div>
+        <div class="stat-card"><div class="stat-value" id="openTrades">0</div><div class="stat-label">Активні позиції</div></div>
+        <div class="stat-card"><div class="stat-value" id="totalPnL">$0</div><div class="stat-label">Загальний PnL</div></div>
+        <div class="stat-card"><div class="stat-value" id="winRate">0%</div><div class="stat-label">Відсоток успіху</div></div>
+        <div class="stat-card"><div class="stat-value" id="dailyPnL">$0</div><div class="stat-label">Сьогодні</div></div>
+        <div class="stat-card"><div class="stat-value" id="totalTrades">0</div><div class="stat-label">Всього угод</div></div>
+    </div>
+    <div class="stats-grid">
+        <div class="stat-card"><div class="stat-value" id="profitFactor">0</div><div class="stat-label">Profit Factor</div></div>
+        <div class="stat-card"><div class="stat-value" id="maxDrawdown">0</div><div class="stat-label">Max Drawdown ($)</div></div>
+        <div class="stat-card"><div class="stat-value" id="avgPnL">$0</div><div class="stat-label">Середній PnL</div></div>
+        <div class="stat-card"><div class="stat-value" id="kelly">0%</div><div class="stat-label">Kelly Criterion</div></div>
+    </div>
+    
+    <!-- Відкриті позиції -->
+    <div class="card">
+        <div class="card-header"><h3>📈 Відкриті позиції</h3></div>
+        <div class="table-wrapper">
+            <table style="width:100%; border-collapse: collapse;">
+                <thead>
+                    <tr style="background: rgba(15,20,40,0.6);">
+                        <th style="padding: 12px; text-align: left; color: #667eea;">Пара</th>
+                        <th style="padding: 12px; text-align: left; color: #667eea;">Сторона</th>
+                        <th style="padding: 12px; text-align: left; color: #667eea;">Вхід</th>
+                        <th style="padding: 12px; text-align: left; color: #667eea;">Кількість</th>
+                        <th style="padding: 12px; text-align: left; color: #667eea;">TP</th>
+                        <th style="padding: 12px; text-align: left; color: #667eea;">SL</th>
+                    </tr>
+                </thead>
+                <tbody id="openTradesBody">
+                    <tr><td colspan="6" style="padding: 12px; text-align: center;">Завантаження...</td></tr>
+                </tbody>
+            </table>
         </div>
+    </div>
+    
+    <!-- Історія угод -->
+    <div class="card">
+        <div class="card-header"><h3>📜 Історія угод</h3></div>
+        <div class="table-wrapper">
+            <table style="width:100%; border-collapse: collapse;">
+                <thead>
+                    <tr style="background: rgba(15,20,40,0.6);">
+                        <th style="padding: 12px; text-align: left; color: #667eea;">Час</th>
+                        <th style="padding: 12px; text-align: left; color: #667eea;">Пара</th>
+                        <th style="padding: 12px; text-align: left; color: #667eea;">Сторона</th>
+                        <th style="padding: 12px; text-align: left; color: #667eea;">Вхід</th>
+                        <th style="padding: 12px; text-align: left; color: #667eea;">Вихід</th>
+                        <th style="padding: 12px; text-align: left; color: #667eea;">PnL</th>
+                    </tr>
+                </thead>
+                <tbody id="tradesBody">
+                    <tr><td colspan="6" style="padding: 12px; text-align: center;">Завантаження...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+    <div class="server-time" id="serverTime"></div>
+</div>
 
         <!-- ПРОГНОЗИ -->
         <div id="tab-forecasts" class="tab">
-            <div class="card"><div class="card-header"><h3>🎯 Прогнози</h3><span style="font-size:12px;color:#888;">Автоматичні прогнози на основі технічного аналізу</span></div><div style="padding:15px;background:rgba(0,255,136,0.1);margin:15px;border-radius:10px;">📊 Прогнози генеруються автоматично при виявленні торгових сигналів.<br>Кожен прогноз діє 4 години.</div></div>
-            <div class="card"><div class="card-header"><h3>⏰ Активні прогнози</h3><button class="btn btn-outline btn-sm" onclick="clearAllForecasts()" style="margin:10px;">🗑️ Очистити всі</button></div><div class="table-wrapper"><table><thead><tr><th>Пара</th><th>Тип</th><th>Вхід</th><th>Ціль</th><th>Поточна</th><th>Прибуток</th><th>Впевн.</th><th>Час</th><th>Дії</th></tr></thead><tbody id="forecastsBody">...</tbody></table></div></div>
+    <div class="card">
+        <div class="card-header">
+            <h3>🎯 Прогнози</h3>
+            <span style="font-size:12px; color:#888;">🤖 Прогнози створюються автоматично на основі торгових сигналів</span>
         </div>
+        <div style="padding:15px; background:rgba(0,255,136,0.1); margin:15px; border-radius:10px;">
+            📊 Прогнози генеруються автоматично при виявленні торгових сигналів.<br>
+            Кожен прогноз діє 4 години.
+        </div>
+    </div>
+    
+    <div class="card">
+        <div class="card-header">
+            <h3>⏰ Активні прогнози</h3>
+            <button class="btn btn-outline btn-sm" onclick="clearAllForecasts()" style="margin:5px;">🗑️ Очистити всі</button>
+        </div>
+        <div class="table-wrapper">
+            <table style="width:100%; border-collapse: collapse;">
+                <thead>
+                    <tr style="background: rgba(15,20,40,0.6);">
+                        <th style="padding: 12px; text-align: left; color: #667eea;">Пара</th>
+                        <th style="padding: 12px; text-align: left; color: #667eea;">Тип</th>
+                        <th style="padding: 12px; text-align: left; color: #667eea;">Вхід</th>
+                        <th style="padding: 12px; text-align: left; color: #667eea;">Ціль</th>
+                        <th style="padding: 12px; text-align: left; color: #667eea;">Поточна</th>
+                        <th style="padding: 12px; text-align: left; color: #667eea;">Прибуток</th>
+                        <th style="padding: 12px; text-align: left; color: #667eea;">Впевн.</th>
+                        <th style="padding: 12px; text-align: left; color: #667eea;">Час</th>
+                        <th style="padding: 12px; text-align: left; color: #667eea;">Дії</th>
+                    </tr>
+                </thead>
+                <tbody id="forecastsBody">
+                    <tr><td colspan="9" style="padding: 12px; text-align: center;">Завантаження...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
 
         <!-- АНАЛІЗ -->
         <div id="tab-analysis" class="tab">
-            <div class="card"><div class="card-header"><h3>📊 Ринковий аналіз</h3><div style="display:flex;gap:10px;"><select id="analysisPair" style="background:#1a1a2e;border:1px solid #667eea;border-radius:10px;padding:8px;color:white;"><option value="BTCUSDT">BTCUSDT</option><option value="ETHUSDT">ETHUSDT</option><option value="SOLUSDT">SOLUSDT</option></select><select id="analysisTimeframe" style="background:#1a1a2e;border:1px solid #667eea;border-radius:10px;padding:8px;color:white;"><option value="1h">1 година</option><option value="4h">4 години</option><option value="1d">1 день</option></select><button class="btn btn-primary btn-sm" onclick="loadAnalysis()">Аналіз</button></div></div><div id="analysisResult" style="padding:20px;">Виберіть пару</div></div>
+            <div class="card"><div class="card-header"><h3>📊 Ринковий аналіз</h3><div style="display:flex;gap:10px;"><select id="analysisPair" style="background:#1a1a2e;border:1px solid #667eea;border-radius:10px;padding:8px;color:white;"><option value="BTCUSDT">BTCUSDT</option><option value="ETHUSDT">ETHUSDT</option><option value="SOLUSDT">SOLUSDT</option></select><select id="analysisTimeframe" style="background:#1a1a2e;border:1px solid #667eea;border-radius:10px;padding:8px;color:white;"><option value="1h">1 година</option><option value="4h">4 години</option><option value="1d">1 день</option></select><button class="btn btn-primary btn-sm" onclick="loadAnalysis()">Аналіз</button></div></div><div id="analysisResult" style="padding:20px;"><div style="text-align:center;color:#888;">Виберіть пару та натисніть "Аналіз"</div></div></div>
         </div>
 
         <!-- ГРАФІКИ -->
@@ -1084,11 +948,9 @@ async def root():
         <!-- НАЛАШТУВАННЯ -->
         <div id="tab-settings" class="tab">
             <div class="card"><div class="card-header"><h3>⚙️ Налаштування бота</h3></div><div style="padding:20px;">
-                
                 <div style="background:rgba(102,126,234,0.1); border-radius:10px; padding:15px; margin-bottom:20px;">
                     <small>📌 Наведіть курсор на параметр для отримання підказки</small>
                 </div>
-                
                 <h4 style="color:#667eea; margin-bottom:15px;">📊 Торгівля</h4>
                 <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:15px;margin-bottom:25px;">
                     <div class="form-group" title="Основний таймфрейм для аналізу (5m, 15m, 1h)">
@@ -1230,6 +1092,7 @@ async def root():
                 const data = JSON.parse(event.data);
                 if (data.type === 'status') {
                     updateDashboard(data);
+                    if (data.next_forecast) updateNextForecastTimer(data.next_forecast);
                 }
                 if (data.type === 'notification') {
                     showNotification(data.title, data.body);
@@ -1321,126 +1184,120 @@ async def root():
         const res = await fetch('/api/status');
         const data = await res.json();
         updateDashboard(data);
+        if (data.next_forecast) updateNextForecastTimer(data.next_forecast);
 
+        // Відкриті позиції
         const openRes = await fetch('/api/open_trades');
         const openTrades = await openRes.json();
         const openBody = document.getElementById('openTradesBody');
-        if(openBody) openBody.innerHTML = openTrades.length ? openTrades.map(t => `
-            <tr style="cursor:pointer;" onclick="showTradeOnChart(${t.id}, '${t.pair}', ${t.entry_price}, '${t.side}', null)">
-                <td>${t.pair}</td>
-                <td><span class="badge ${t.side === 'BUY' ? 'badge-buy' : 'badge-sell'}">${t.side === 'BUY' ? 'LONG' : 'SHORT'}</span></td>
-                <td>$${t.entry_price.toFixed(0)}</td>
-                <td>${t.quantity}</td>
-                <td>$${t.take_profit?.toFixed(0) || '-'}</td>
-                <td>$${t.stop_loss?.toFixed(0) || '-'}</td>
-            </tr>
-        `).join('') : '<tr><td colspan="6" style="text-align:center">Немає відкритих позицій</td></tr>';
+        if (openBody) {
+            if (openTrades && openTrades.length > 0) {
+                openBody.innerHTML = openTrades.map(t => `
+                    <tr style="cursor:pointer;" onclick="showTradeOnChart(${t.id}, '${t.pair}', ${t.entry_price}, '${t.side}', null)">
+                        <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1);">${t.pair}</td>
+                        <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1);"><span class="badge ${t.side === 'BUY' ? 'badge-buy' : 'badge-sell'}">${t.side === 'BUY' ? 'LONG' : 'SHORT'}</span></td>
+                        <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1);">$${t.entry_price.toFixed(0)}</td>
+                        <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1);">${t.quantity}</td>
+                        <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1);">$${t.take_profit?.toFixed(0) || '-'}</td>
+                        <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1);">$${t.stop_loss?.toFixed(0) || '-'}</td>
+                    </tr>
+                `).join('');
+            } else {
+                openBody.innerHTML = '<tr><td colspan="6" style="padding: 12px; text-align: center;">Немає відкритих позицій</td></tr>';
+            }
+        }
 
+        // Історія угод
         const tradesRes = await fetch('/api/trades?limit=20');
         const trades = await tradesRes.json();
         const tradesBody = document.getElementById('tradesBody');
-        if(tradesBody) tradesBody.innerHTML = trades.length ? trades.map(t => `
-            <tr style="cursor:pointer;" onclick="showTradeOnChart(${t.id}, '${t.pair}', ${t.entry_price}, '${t.side}', ${t.exit_price || 'null'})">
-                <td style="white-space: nowrap;">${new Date(t.opened_at).toLocaleString()}</td>
-                <td>${t.pair}</td>
-                <td><span class="badge ${t.side === 'BUY' ? 'badge-buy' : 'badge-sell'}">${t.side === 'BUY' ? 'КУПІВЛЯ' : 'ПРОДАЖ'}</span></td>
-                <td>$${t.entry_price.toFixed(0)}</td>
-                <td>${t.exit_price ? '$' + t.exit_price.toFixed(0) : '-'}</td>
-                <td class="${t.pnl >= 0 ? 'positive' : 'negative'}">${t.pnl >= 0 ? '+' : ''}$${t.pnl.toFixed(2)}</td>
-            </tr>
-        `).join('') : '<tr><td colspan="6" style="text-align:center">Ще немає угод</td></tr>';
+        if (tradesBody) {
+            if (trades && trades.length > 0) {
+                tradesBody.innerHTML = trades.map(t => `
+                    <tr style="cursor:pointer;" onclick="showTradeOnChart(${t.id}, '${t.pair}', ${t.entry_price}, '${t.side}', ${t.exit_price || 'null'})">
+                        <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1); white-space: nowrap;">${new Date(t.opened_at).toLocaleString()}</td>
+                        <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1);">${t.pair}</td>
+                        <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1);"><span class="badge ${t.side === 'BUY' ? 'badge-buy' : 'badge-sell'}">${t.side === 'BUY' ? 'КУПІВЛЯ' : 'ПРОДАЖ'}</span></td>
+                        <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1);">$${t.entry_price.toFixed(0)}</td>
+                        <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1);">${t.exit_price ? '$' + t.exit_price.toFixed(0) : '-'}</td>
+                        <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1);" class="${t.pnl >= 0 ? 'positive' : 'negative'}">${t.pnl >= 0 ? '+' : ''}$${t.pnl.toFixed(2)}</td>
+                    </tr>
+                `).join('');
+            } else {
+                tradesBody.innerHTML = '<tr><td colspan="6" style="padding: 12px; text-align: center;">Ще немає угод</td></tr>';
+            }
+        }
     } catch(e) { console.error(e); }
 }
 
-// Функція для показу угоди на графіку
-function showTradeOnChart(tradeId, pair, entryPrice, side, exitPrice) {
-    // Перемикаємо на вкладку "Графіки"
-    document.querySelectorAll('.nav-btn').forEach(btn => {
-        if (btn.dataset.tab === 'charts') {
-            btn.click();
-        }
-    });
-    
-    // Оновлюємо вибрану пару в селекторі
-    const chartPairSelect = document.getElementById('chartPair');
-    if (chartPairSelect) {
-        chartPairSelect.value = pair;
-    }
-    
-    // Завантажуємо графік з підсвічуванням угоди
-    loadChartWithTrade(tradeId, pair, entryPrice, side, exitPrice);
-}
-
-async function loadChartWithTrade(tradeId, pair, entryPrice, side, exitPrice) {
-    const timeframe = document.getElementById('chartTimeframe').value;
-    
-    try {
-        const res = await fetch(`/api/chart/${pair}?timeframe=${timeframe}&highlight_trade=${tradeId}`);
-        const data = await res.json();
-        Plotly.newPlot('priceChart', data.data, data.layout || {}, { responsive: true });
-        
-        // Додаємо анотацію на графік
-        const annotation = {
-            text: `${side === 'BUY' ? '🟢 ВХІД' : '🔴 ВХІД'} $${entryPrice.toFixed(0)}`,
-            x: new Date(),
-            y: entryPrice,
-            xref: 'x',
-            yref: 'y',
-            showarrow: true,
-            arrowhead: 2,
-            arrowsize: 1,
-            arrowwidth: 2,
-            arrowcolor: side === 'BUY' ? '#00ff88' : '#ff4757',
-            ax: 0,
-            ay: -40,
-            bgcolor: 'rgba(0,0,0,0.7)',
-            bordercolor: side === 'BUY' ? '#00ff88' : '#ff4757',
-            borderwidth: 1,
-            borderpad: 4,
-            font: { color: 'white', size: 12 }
-        };
-        
-        const annotations = data.layout?.annotations || [];
-        annotations.push(annotation);
-        
-        if (exitPrice) {
-            annotations.push({
-                text: `🏁 ВИХІД $${exitPrice.toFixed(0)}`,
-                x: new Date(),
-                y: exitPrice,
-                xref: 'x',
-                yref: 'y',
-                showarrow: true,
-                arrowhead: 2,
-                arrowsize: 1,
-                arrowwidth: 2,
-                arrowcolor: 'white',
-                ax: 0,
-                ay: 40,
-                bgcolor: 'rgba(0,0,0,0.7)',
-                bordercolor: 'white',
-                borderwidth: 1,
-                font: { color: 'white', size: 12 }
+        function showTradeOnChart(tradeId, pair, entryPrice, side, exitPrice) {
+            document.querySelectorAll('.nav-btn').forEach(btn => {
+                if (btn.dataset.tab === 'charts') btn.click();
             });
+            const chartPairSelect = document.getElementById('chartPair');
+            if (chartPairSelect) chartPairSelect.value = pair;
+            loadChartWithTrade(tradeId, pair, entryPrice, side, exitPrice);
         }
-        
-        Plotly.update('priceChart', {}, { annotations: annotations });
-        
-    } catch(e) {
-        console.error('Помилка завантаження графіку з угодою:', e);
-        loadChart(); // fallback
-    }
-}
+
+        async function loadChartWithTrade(tradeId, pair, entryPrice, side, exitPrice) {
+            const timeframe = document.getElementById('chartTimeframe').value;
+            try {
+                const res = await fetch(`/api/chart/${pair}?timeframe=${timeframe}`);
+                const data = await res.json();
+                Plotly.newPlot('priceChart', data.data, data.layout || {}, { responsive: true });
+                const annotation = {
+                    text: `${side === 'BUY' ? '🟢 ВХІД' : '🔴 ВХІД'} $${entryPrice.toFixed(0)}`,
+                    x: new Date(), y: entryPrice, xref: 'x', yref: 'y', showarrow: true, arrowhead: 2, arrowsize: 1,
+                    arrowwidth: 2, arrowcolor: side === 'BUY' ? '#00ff88' : '#ff4757', ax: 0, ay: -40,
+                    bgcolor: 'rgba(0,0,0,0.7)', bordercolor: side === 'BUY' ? '#00ff88' : '#ff4757',
+                    borderwidth: 1, font: { color: 'white', size: 12 }
+                };
+                const annotations = data.layout?.annotations || [];
+                annotations.push(annotation);
+                if (exitPrice) {
+                    annotations.push({
+                        text: `🏁 ВИХІД $${exitPrice.toFixed(0)}`,
+                        x: new Date(), y: exitPrice, xref: 'x', yref: 'y', showarrow: true, arrowhead: 2,
+                        arrowsize: 1, arrowwidth: 2, arrowcolor: 'white', ax: 0, ay: 40,
+                        bgcolor: 'rgba(0,0,0,0.7)', bordercolor: 'white', font: { color: 'white', size: 12 }
+                    });
+                }
+                Plotly.update('priceChart', {}, { annotations: annotations });
+            } catch(e) { console.error(e); loadChart(); }
+        }
 
         async function loadForecasts() {
-            try {
-                const res = await fetch('/api/forecasts');
-                const forecasts = await res.json();
-                const body = document.getElementById('forecastsBody');
-                if(body) body.innerHTML = forecasts.length ? forecasts.map(f => { const profit = ((f.current_price - f.entry_price) / f.entry_price * 100 * (f.signal_type === 'LONG' ? 1 : -1)).toFixed(1); const hours = Math.floor(f.time_remaining / 3600); const minutes = Math.floor((f.time_remaining % 3600) / 60); return `<tr><td>${f.pair}</td><td><span class="badge ${f.signal_type === 'LONG' ? 'badge-long' : 'badge-short'}">${f.signal_type === 'LONG' ? '📈 LONG' : '📉 SHORT'}</span></td><td>$${f.entry_price.toFixed(0)}</td><td>$${f.target_price.toFixed(0)}</td><td>$${f.current_price.toFixed(0)}</td><td class="${profit >= 0 ? 'positive' : 'negative'}">${profit}%</td><td>${f.confidence}%</td><td class="timer" data-expires="${f.expires_at}">${hours}г ${minutes}хв</td><td><button class="btn btn-outline btn-sm" onclick="deleteForecast(${f.id})">🗑️</button></td></tr>`; }).join('') : '<tr><td colspan="9">Немає активних прогнозів</td></tr>';
+    try {
+        const res = await fetch('/api/forecasts');
+        const forecasts = await res.json();
+        const body = document.getElementById('forecastsBody');
+        if (body) {
+            if (forecasts && forecasts.length > 0) {
+                body.innerHTML = forecasts.map(f => {
+                    const profit = ((f.current_price - f.entry_price) / f.entry_price * 100 * (f.signal_type === 'LONG' ? 1 : -1)).toFixed(1);
+                    const hours = Math.floor(f.time_remaining / 3600);
+                    const minutes = Math.floor((f.time_remaining % 3600) / 60);
+                    return `
+                        <tr>
+                            <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1);">${f.pair}</td>
+                            <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1);"><span class="badge ${f.signal_type === 'LONG' ? 'badge-long' : 'badge-short'}">${f.signal_type === 'LONG' ? '📈 LONG' : '📉 SHORT'}</span></td>
+                            <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1);">$${f.entry_price.toFixed(0)}</td>
+                            <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1);">$${f.target_price.toFixed(0)}</td>
+                            <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1);">$${f.current_price.toFixed(0)}</td>
+                            <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1);" class="${profit >= 0 ? 'positive' : 'negative'}">${profit}%</td>
+                            <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1);">${f.confidence}%</td>
+                            <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1);" class="timer" data-expires="${f.expires_at}">${hours}г ${minutes}хв</td>
+                            <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1);"><button class="btn btn-outline btn-sm" onclick="deleteForecast(${f.id})">🗑️</button></td>
+                        </tr>
+                    `;
+                }).join('');
                 startTimers();
-            } catch(e) { console.error(e); }
+            } else {
+                body.innerHTML = '<tr><td colspan="9" style="padding: 12px; text-align: center;">Немає активних прогнозів</td></tr>';
+            }
         }
+    } catch(e) { console.error(e); }
+}
 
         function startTimers() {
             document.querySelectorAll('.timer[data-expires]').forEach(el => {
@@ -1506,20 +1363,20 @@ async function loadChartWithTrade(tradeId, pair, entryPrice, side, exitPrice) {
         async function loadSettings() {
             const res = await fetch('/api/settings');
             const s = await res.json();
-            if(document.getElementById('baseTimeframe')) document.getElementById('baseTimeframe').value = s.trading?.base_timeframe || '5m';
-            if(document.getElementById('signalCheckInterval')) document.getElementById('signalCheckInterval').value = s.trading?.signal_check_interval || 30;
-            if(document.getElementById('emaFast')) document.getElementById('emaFast').value = s.strategy?.ema_fast || 50;
-            if(document.getElementById('emaSlow')) document.getElementById('emaSlow').value = s.strategy?.ema_slow || 200;
-            if(document.getElementById('rsiPeriod')) document.getElementById('rsiPeriod').value = s.strategy?.rsi_period || 14;
-            if(document.getElementById('rsiMin')) document.getElementById('rsiMin').value = s.strategy?.rsi_min || 40;
-            if(document.getElementById('rsiMax')) document.getElementById('rsiMax').value = s.strategy?.rsi_max || 60;
-            if(document.getElementById('tpPercent')) document.getElementById('tpPercent').value = s.strategy?.take_profit_percent || 2.0;
-            if(document.getElementById('slPercent')) document.getElementById('slPercent').value = s.strategy?.stop_loss_percent || 1.5;
-            if(document.getElementById('riskPerTrade')) document.getElementById('riskPerTrade').value = s.risk?.risk_per_trade || 2.0;
-            if(document.getElementById('maxOpenTrades')) document.getElementById('maxOpenTrades').value = s.risk?.max_open_trades || 5;
-            if(document.getElementById('maxDailyLoss')) document.getElementById('maxDailyLoss').value = s.risk?.max_daily_loss || 5.0;
-            if(document.getElementById('useBollinger')) document.getElementById('useBollinger').checked = s.strategy?.use_bollinger || false;
-            if(document.getElementById('useKelly')) document.getElementById('useKelly').checked = s.risk?.use_kelly || false;
+            if (document.getElementById('baseTimeframe')) document.getElementById('baseTimeframe').value = s.trading?.base_timeframe || '5m';
+            if (document.getElementById('signalCheckInterval')) document.getElementById('signalCheckInterval').value = s.trading?.signal_check_interval || 30;
+            if (document.getElementById('emaFast')) document.getElementById('emaFast').value = s.strategy?.ema_fast || 50;
+            if (document.getElementById('emaSlow')) document.getElementById('emaSlow').value = s.strategy?.ema_slow || 200;
+            if (document.getElementById('rsiPeriod')) document.getElementById('rsiPeriod').value = s.strategy?.rsi_period || 14;
+            if (document.getElementById('rsiMin')) document.getElementById('rsiMin').value = s.strategy?.rsi_min || 40;
+            if (document.getElementById('rsiMax')) document.getElementById('rsiMax').value = s.strategy?.rsi_max || 60;
+            if (document.getElementById('tpPercent')) document.getElementById('tpPercent').value = s.strategy?.take_profit_percent || 2.0;
+            if (document.getElementById('slPercent')) document.getElementById('slPercent').value = s.strategy?.stop_loss_percent || 1.5;
+            if (document.getElementById('riskPerTrade')) document.getElementById('riskPerTrade').value = s.risk?.risk_per_trade || 2.0;
+            if (document.getElementById('maxOpenTrades')) document.getElementById('maxOpenTrades').value = s.risk?.max_open_trades || 5;
+            if (document.getElementById('maxDailyLoss')) document.getElementById('maxDailyLoss').value = s.risk?.max_daily_loss || 5.0;
+            if (document.getElementById('useBollinger')) document.getElementById('useBollinger').checked = s.strategy?.use_bollinger || false;
+            if (document.getElementById('useKelly')) document.getElementById('useKelly').checked = s.risk?.use_kelly || false;
         }
 
         async function saveSettings() {
@@ -1539,8 +1396,8 @@ async function loadChartWithTrade(tradeId, pair, entryPrice, side, exitPrice) {
             const data = await res.json();
             const body = document.getElementById('logsBody');
             if (!body) return;
-            if (!data.logs || data.logs.length === 0 && currentLogOffset === 0) { body.innerHTML = '<tr><td colspan="4" style="text-align:center">Немає логів</td></tr>'; return; }
-            const rows = data.logs.map(l => `<tr><td style="white-space:nowrap;">${new Date(l.timestamp).toLocaleString()}</td><td><span class="log-${l.level.toLowerCase()}">${l.level}</span></td><td>${l.module || '-'}</td><td>${l.message}</td></tr>`).join('');
+            if (!data.logs || data.logs.length === 0 && currentLogOffset === 0) { body.innerHTML = '<tr><td colspan="4" style="text-align:center">Немає логів</td></table>'; return; }
+            const rows = data.logs.map(l => `<tr><td style="white-space:nowrap;">${new Date(l.timestamp).toLocaleString()}</td><td><span class="log-${l.level.toLowerCase()}">${l.level}</span></td><td>${l.module || '-'}</td><td style="word-break:break-word;">${l.message}</td></tr>`).join('');
             if (reset) body.innerHTML = rows; else body.innerHTML += rows;
             hasMoreLogs = data.logs && data.logs.length === 50;
             document.getElementById('loadMoreBtn').style.display = hasMoreLogs ? 'inline-block' : 'none';
