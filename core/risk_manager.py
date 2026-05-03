@@ -63,23 +63,20 @@ class RiskManager:
         # Кількість одиниць
         quantity = risk_amount / risk_per_unit
 
-        # Мінімальний об'єм для Bybit (BTCUSDT = 0.001)
+        # Мінімальний об'єм для Bybit
         min_qty = 0.001
-
         if quantity < min_qty:
             quantity = min_qty
 
-        # Округлення до 3 знаків
         quantity = round(quantity, 3)
 
-        # Перевірка, чи вистачає балансу
+        # Перевірка балансу
         required_balance = quantity * entry_price
         if required_balance > balance:
-            # Коригуємо під доступний баланс
             quantity = balance / entry_price
             quantity = round(quantity, 3)
 
-        logger.info(f"Position size: {quantity} (risk={self.risk_per_trade}%, balance={balance:.2f})")
+        logger.debug(f"📐 Розмір позиції: {quantity} (ризик={self.risk_per_trade}%, баланс={balance:.2f})")
         return quantity
 
     def update_daily_check(self):
