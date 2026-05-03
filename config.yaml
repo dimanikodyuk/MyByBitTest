@@ -1,0 +1,85 @@
+exchange:
+  name: bybit
+  testnet: false
+  ws_ping_interval: 20
+  ws_ping_timeout: 10
+
+trading:
+  pairs:
+    - BTCUSDT
+    - ETHUSDT
+    - SOLUSDT
+  base_timeframe: 5m
+  confirmation_timeframes: [15m, 1h]
+  signal_check_interval: 30
+  # Нові налаштування
+  trading_hours:  # Години торгівлі (опціонально)
+    enabled: false
+    start: "09:00"
+    end: "21:00"
+    timezone: "Europe/Kiev"
+  news_filter:
+    enabled: false
+    # Ключові слова для фільтрації новин
+    keywords: ["FOMC", "CPI", "Nonfarm", "Interest Rate", "Fed"]
+
+strategy:
+  ema_fast: 50
+  ema_slow: 200
+  rsi_period: 14
+  rsi_min: 40
+  rsi_max: 60
+  macd_fast: 12
+  macd_slow: 26
+  macd_signal: 9
+  min_volume_ratio: 1.2
+  take_profit_percent: 2.0
+  stop_loss_percent: 1.5
+  trailing_stop: true
+  trailing_activation_percent: 1.0
+  trailing_distance_percent: 0.5
+  # Нові індикатори
+  use_bollinger: true
+  use_ichimoku: false
+  use_fibonacci: true
+
+risk:
+  risk_per_trade: 2.0
+  max_open_trades: 5
+  max_daily_loss: 5.0
+  min_balance_usdt: 10.0
+  # Kelly Criterion
+  use_kelly: true
+  kelly_window: 50  # Кількість угод для розрахунку
+
+paper_trading:
+  initial_balance: 100.0
+  commission_percent: 0.1
+  slippage_percent: 0.1
+  spread_percent: 0.05
+
+real_trading:
+  enabled: false
+  max_position_usdt: 500
+  use_testnet: false
+
+database:
+  path: data/trading.db
+  log_retention_days: 7
+
+logging:
+  level: INFO
+  file: logs/trading.log
+  rotation: 7 days
+  compression: zip
+
+web:
+  host: 0.0.0.0
+  port: 8000
+  enable_charts: true
+  enable_web_push: true  # Web Push сповіщення
+
+telegram:
+  enabled: true
+  commands_enabled: true
+  notifications_enabled: true

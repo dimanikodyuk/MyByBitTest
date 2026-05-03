@@ -1,0 +1,146 @@
+from sqlalchemy.orm import Session
+from sqlalchemy import func, and_
+from datetime import datetime, timedelta
+from typing import List, Optional, Dict
+from db.models import Trade, Signal, Balance, Log, Order, OrderStatus, OrderSide, SignalType
+from utils.logger import logger
+
+
+class DatabaseOperations:
+    """CRUD операції з БД"""
+
+    def __init__(self, db_session: Session):
+        self.db = db_session
+
+    # === TRADES ===
+    def create_trade(self, trade_data: dict) -> Trade:
+        trade = Trade(**trade_data)
+        self.db.add(trade)
+        self.db.commit()
+        self.db.refresh(trade)
+        logger.info(f"Trade created: {trade.id} - {trade.pair} {trade.side}")
+        return trade
+
+    def update_trade(self, trade_id: int, updates: dict) -> Optional[Trade]:
+        trade = self.db.query(Trade).filter(Trade.id == trade_id).first()
+        if trade:
+            for key, value in updates.items():
+                setattr(trade, key, value)
+            self.db.commit()
+            self.db.refresh(trade)
+        return trade
+
+    def get_open_trades(self, pair: Optional[str] = None, is_paper: bool = True) -> List[Trade]:
+        query = self.db.query(Trade).filter(
+            Trade.status == OrderStatus.PENDING,
+            Trade.is_paper == is_paper
+        )
+        if pair:
+            query = query.filter(Trade.pair == pair)
+        return query.all()
+
+    def get_trades_history(self, limit: int = 100, is_paper: bool = True) -> List[Trade]:
+        return self.db.query(Trade).filter(Trade.is_paper == is_paper).order_by(Trade.opened_at.desc()).limit(limit).all()
+
+    # === BALANCE ===
+    def get_balance(self, asset: str = "USDT", is_paper: bool = True) -> float:
+        balance = self.db.query(Balance).filter(
+            Balance.asset == asset,
+            Balance.is_paper == is_paper
+        ).first()
+        return balance.amount if balance else 0.0
+
+    def update_balance(self, asset: str, amount: float, is_paper: bool = True):
+        balance = self.db.query(Balance).filter(
+            Balance.asset == asset,
+            Balance.is_paper == is_paper
+        ).first()
+
+        if balance:
+            balance.amount = amount
+        else:
+            balance = Balance(asset=asset, amount=amount, is_paper=is_paper)
+            self.db.add(balance)
+
+        self.db.commit()
+        logger.info(f"Balance updated: {asset} = {amount} (paper={is_paper})")
+
+    def reset_paper_balance(self, initial_balance: float = 100.0):
+        # Видаляємо всі paper угоди
+        self.db.query(Trade).filter(Trade.is_paper == 1).delete()
+        self.db.query(Order).filter(Order.is_paper == 1).delete()
+
+        # Оновлюємо баланс
+        self.db.query(Balance).filter(Balance.is_paper == 1).delete()
+        self.db.add(Balance(asset="USDT", amount=initial_balance, is_paper=1))
+
+        self.db.commit()
+        logger.info(f"Paper balance reset to {initial_balance} USDT")
+
+    # === SIGNALS ===
+    def save_signal(self, pair: str, signal: SignalType, price: float,
+                    confidence: float = 0.0, indicators: dict = None) -> Signal:
+        import json
+        signal_data = {
+            "pair": pair,
+            "signal": signal,
+            "price": price,
+            "confidence": confidence,
+            "indicators": json.dumps(indicators) if indicators else None
+        }
+        db_signal = Signal(**signal_data)
+        self.db.add(db_signal)
+        self.db.commit()
+        return db_signal
+
+    # === LOGS ===
+    def add_log(self, level: str, message: str, module: str = None):
+        log = Log(level=level, message=message, module=module)
+        self.db.add(log)
+        self.db.commit()
+
+    def cleanup_old_logs(self, days: int = 7):
+        cutoff_date = datetime.now() - timedelta(days=days)
+        deleted = self.db.query(Log).filter(Log.timestamp < cutoff_date).delete()
+        self.db.commit()
+        logger.info(f"Cleaned up {deleted} old log records")
+
+    # === STATISTICS ===
+    def get_daily_pnl(self, is_paper: bool = True) -> float:
+        """Отримати PnL за сьогодні"""
+        today = datetime.now().date()
+        trades = self.db.query(Trade).filter(
+            Trade.is_paper == is_paper,
+            Trade.status == OrderStatus.CLOSED,
+            func.date(Trade.closed_at) == today
+        ).all()
+
+        total_pnl = sum(t.pnl for t in trades)
+        return total_pnl
+
+    def get_stats(self, is_paper: bool = True) -> dict:
+        """Отримати статистику"""
+        closed_trades = self.db.query(Trade).filter(
+            Trade.is_paper == is_paper,
+            Trade.status == OrderStatus.CLOSED
+        ).all()
+
+        if not closed_trades:
+            return {
+                "total_trades": 0,
+                "win_rate": 0,
+                "total_pnl": 0,
+                "avg_pnl": 0,
+                "max_drawdown": 0
+            }
+
+        wins = len([t for t in closed_trades if t.pnl > 0])
+        total_pnl = sum(t.pnl for t in closed_trades)
+
+        return {
+            "total_trades": len(closed_trades),
+            "win_rate": (wins / len(closed_trades)) * 100,
+            "total_pnl": total_pnl,
+            "avg_pnl": total_pnl / len(closed_trades),
+            "max_drawdown": min(t.pnl for t in closed_trades) if closed_trades else 0
+        }
