@@ -78,14 +78,33 @@ class TelegramBot:
         if not self.bot or not self.chat_id:
             return
 
-        try:
-            await self.bot.send_message(
-                chat_id=self.chat_id,
-                text=text,
-                parse_mode=parse_mode
-            )
-        except Exception as e:
-            logger.error(f"Failed to send telegram message: {e}")
+        # Розбиваємо довгі повідомлення на частини
+        max_length = 4096
+        if len(text) <= max_length:
+            try:
+                await self.bot.send_message(
+                    chat_id=self.chat_id,
+                    text=text,
+                    parse_mode=parse_mode
+                )
+            except Exception as e:
+                # Якщо помилка форматування, пробуємо без parse_mode
+                logger.error(f"Failed to send with parse_mode: {e}")
+                await self.bot.send_message(
+                    chat_id=self.chat_id,
+                    text=text,
+                    parse_mode=None
+                )
+        else:
+            # Розбиваємо на частини
+            for i in range(0, len(text), max_length):
+                part = text[i:i + max_length]
+                await self.bot.send_message(
+                    chat_id=self.chat_id,
+                    text=part,
+                    parse_mode=parse_mode
+                )
+                await asyncio.sleep(0.1)  # Невелика затримка
 
     async def send_trade_notification(self, trade_data: dict):
         """Сповіщення про відкриття угоди"""
@@ -122,29 +141,41 @@ Balance: ${trade_data.get('balance', 0):.2f}"""
         await self.send_message(text, parse_mode=ParseMode.MARKDOWN)
 
     async def send_error(self, error_msg: str, error_type: str = "ERROR", traceback_info: str = None):
-        """Сповіщення про помилку з деталями"""
+        """Сповіщення про помилку з деталями - HTML версія"""
+        from aiogram.enums import ParseMode
+
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # Обмежуємо довжину повідомлення (Telegram ліміт 4096 символів)
-        max_len = 4000
+        # Обмежуємо довжину
+        max_len = 3500
         if len(error_msg) > max_len:
             error_msg = error_msg[:max_len] + "..."
 
         if traceback_info and len(traceback_info) > max_len:
             traceback_info = traceback_info[:max_len] + "..."
 
-        text = f"""🚨 *ПОМИЛКА БОТА* 🚨
+        # HTML екранування
+        def escape_html(text: str) -> str:
+            return (text.replace('&', '&amp;')
+                    .replace('<', '&lt;')
+                    .replace('>', '&gt;')
+                    .replace('"', '&quot;'))
 
-📅 Час: `{current_time}`
-⚠️ Тип: `{error_type}`
+        safe_error_msg = escape_html(error_msg)
+        safe_traceback = escape_html(traceback_info) if traceback_info else None
+        safe_error_type = escape_html(error_type)
 
-📝 Повідомлення: {error_msg} 
-"""
+        text = f"<b>🚨 ПОМИЛКА БОТА</b> 🚨\n\n"
+        text += f"📅 Час: <code>{current_time}</code>\n"
+        text += f"⚠️ Тип: <code>{safe_error_type}</code>\n\n"
+        text += f"📝 Повідомлення:\n<pre>{safe_error_msg}</pre>"
 
-        if traceback_info:
-            text += f"\n\n📚 Stack trace:\n```\n{traceback_info}\n```"
+        if safe_traceback:
+            text += f"\n\n📚 Stack trace:\n<pre>{safe_traceback}</pre>"
 
-        await self.send_message(text, parse_mode=ParseMode.MARKDOWN)
+        # Використовуємо HTML
+        await self.send_message(text, parse_mode=ParseMode.HTML)
+
 
     async def send_error_from_exception(self, exception: Exception, context: str = ""):
         """Відправка помилки з Exception об'єкта"""
