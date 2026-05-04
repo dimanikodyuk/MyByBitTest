@@ -71,7 +71,7 @@ class PaperEngine:
             logger.error(f"Trade {trade_id} not found or already closed")
             return None
 
-        # Розрахунок slippage для sell (ціна трохи нижче)
+        # Розрахунок slippage для sell
         slippage_amount = current_price * (self.slippage / 100)
         spread_amount = current_price * (self.spread / 100)
         execution_price = current_price - slippage_amount - spread_amount
@@ -80,23 +80,22 @@ class PaperEngine:
         if trade.side == OrderSide.BUY:
             pnl = (execution_price - trade.entry_price) * trade.quantity
             pnl_percent = ((execution_price - trade.entry_price) / trade.entry_price) * 100
+            # Повертаємо кошти + прибуток
+            return_amount = (execution_price * trade.quantity) - (
+                        execution_price * trade.quantity * self.commission / 100)
         else:  # SELL (short)
             pnl = (trade.entry_price - execution_price) * trade.quantity
             pnl_percent = ((trade.entry_price - execution_price) / trade.entry_price) * 100
+            # Для SHORT: повертаємо заблоковану суму + прибуток (або віднімаємо збиток)
+            return_amount = (trade.entry_price * trade.quantity) + pnl
+            return_amount = return_amount - (execution_price * trade.quantity * self.commission / 100)
 
         # Комісія на закриття
         close_commission = (execution_price * trade.quantity) * (self.commission / 100)
 
-        # Повертаємо кошти + прибуток
+        # Оновлюємо баланс
         balance = self.db.get_balance("USDT", is_paper=True)
-        return_amount = (execution_price * trade.quantity) - close_commission
-
-        if trade.side == OrderSide.BUY:
-            new_balance = balance + return_amount
-        else:
-            # Для short - повертаємо заставу + прибуток
-            new_balance = balance + return_amount
-
+        new_balance = balance + return_amount - close_commission
         self.db.update_balance("USDT", new_balance, is_paper=True)
 
         # Оновлюємо угоду
@@ -110,8 +109,8 @@ class PaperEngine:
         }
         self.db.update_trade(trade_id, updates)
 
-        logger.info(
-            f"[PAPER] SELL {trade.quantity} {trade.pair} @ {execution_price:.2f} | PnL: {pnl:.2f} ({pnl_percent:.2f}%) | Balance: {new_balance:.2f}")
+        logger.info(f"[PAPER] CLOSE {trade.quantity} {trade.pair} @ {execution_price:.2f} | "
+                    f"PnL: {pnl:.2f} ({pnl_percent:.2f}%) | Balance: {new_balance:.2f}")
 
         return {
             "trade_id": trade_id,
@@ -123,21 +122,24 @@ class PaperEngine:
     def execute_short(self, pair: str, quantity: float, current_price: float) -> Optional[Dict]:
         """Виконання short ордера (paper)"""
 
-        # Для short - перевірка балансу (потрібна маржа)
         balance = self.db.get_balance("USDT", is_paper=True)
-        margin_required = quantity * current_price * 0.1  # 10% маржа для прикладу
+        position_value = quantity * current_price  # Повна вартість позиції
 
-        if balance < margin_required:
-            logger.warning(f"Insufficient margin for short: {balance} < {margin_required}")
+        # Для SHORT - блокуємо повну вартість позиції
+        if balance < position_value:
+            logger.warning(f"Insufficient balance for short: {balance} < {position_value}")
             return None
 
         # Slippage та spread
         slippage_amount = current_price * (self.slippage / 100)
         spread_amount = current_price * (self.spread / 100)
-        execution_price = current_price - slippage_amount - spread_amount  # Для short продаємо дешевше
+        execution_price = current_price - slippage_amount - spread_amount
 
-        # Блокуємо маржу
-        new_balance = balance - margin_required
+        # Комісія
+        commission_amount = position_value * (self.commission / 100)
+
+        # Блокуємо ПОВНУ вартість позиції (не маржу)
+        new_balance = balance - position_value - commission_amount
         self.db.update_balance("USDT", new_balance, is_paper=True)
 
         trade_data = {
@@ -145,7 +147,7 @@ class PaperEngine:
             "side": OrderSide.SELL,
             "entry_price": execution_price,
             "quantity": quantity,
-            "commission": 0,
+            "commission": commission_amount,
             "slippage": slippage_amount,
             "is_paper": 1,
             "status": OrderStatus.PENDING
@@ -153,14 +155,16 @@ class PaperEngine:
 
         trade = self.db.create_trade(trade_data)
 
-        logger.info(
-            f"[PAPER] SHORT {quantity} {pair} @ {execution_price:.2f} | Margin: {margin_required:.2f} | Balance: {new_balance:.2f}")
+        logger.info(f"[PAPER] SHORT {quantity} {pair} @ {execution_price:.2f} | "
+                    f"Position: ${position_value:.2f} | Commission: {commission_amount:.4f} | "
+                    f"Free Balance: {new_balance:.2f}")
 
         return {
             "trade_id": trade.id,
             "execution_price": execution_price,
             "quantity": quantity,
-            "margin": margin_required
+            "position_value": position_value,
+            "commission": commission_amount
         }
 
     def reset(self):
