@@ -150,6 +150,8 @@ class AutoTradingBot:
 
         if self.order_manager:
             self.order_manager.stop()
+            # Даємо час на завершення
+            await asyncio.sleep(2)
 
         if self.telegram_bot:
             await self.telegram_bot.send_message("🛑 *Bot is shutting down*", parse_mode="Markdown")
@@ -163,7 +165,6 @@ class AutoTradingBot:
 
         logger.info("Завершення роботи завершено")
 
-
 def main():
     """Точка входу"""
     bot = AutoTradingBot()
@@ -175,7 +176,6 @@ def main():
     except Exception as e:
         logger.error(f"Фатальна помилка: {e}")
         sys.exit(1)
-
 
 if __name__ == "__main__":
     main()

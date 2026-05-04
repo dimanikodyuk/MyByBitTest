@@ -177,6 +177,23 @@ class OrderManager:
             "timestamp": datetime.now().isoformat()
         }
 
+    def stop(self):
+        """Зупинка бота"""
+        self.running = False
+        logger.info("🛑 OrderManager зупинено")
+
+        # Форсоване закриття всіх задач
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # Відміняємо всі задачі
+                for task in asyncio.all_tasks(loop):
+                    if task != asyncio.current_task():
+                        task.cancel()
+        except:
+            pass
+
     def _check_signals_sync(self, pair: str):
         """Перевірка сигналів для входу (синхронна) - покращене логування"""
 
@@ -467,10 +484,6 @@ class OrderManager:
             retention_days = config.get('database.log_retention_days', 7)
             self.db.cleanup_old_logs(retention_days)
 
-    def stop(self):
-        """Зупинка бота"""
-        self.running = False
-        logger.info("🛑 OrderManager зупинено")
 
     async def run(self):
         """Головний цикл бота"""
