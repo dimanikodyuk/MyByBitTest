@@ -16,11 +16,6 @@ class Config:
             cls._instance._load()
         return cls._instance
 
-    def reload_config():
-        """Перезавантаження конфігурації"""
-        global config
-        config = Config()
-
     def _load(self):
         # Завантаження YAML
         config_path = Path(__file__).parent.parent / "config.yaml"
@@ -38,6 +33,10 @@ class Config:
         if self.bot_mode == 'real':
             assert self.api_key and self.api_secret, "API keys required for real trading"
 
+    def reload(self):
+        """Перезавантаження конфігурації"""
+        self._load()
+
     def get(self, key, default=None):
         keys = key.split('.')
         value = self.data
@@ -49,4 +48,11 @@ class Config:
         return value
 
 
+# Глобальний екземпляр
 config = Config()
+
+
+def reload_config():
+    """Перезавантаження глобального конфігу"""
+    global config
+    config.reload()
