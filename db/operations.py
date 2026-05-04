@@ -30,14 +30,6 @@ class DatabaseOperations:
             self.db.refresh(trade)
         return trade
 
-    def get_trade_by_id(self, trade_id: int):
-        """Отримання угоди за ID"""
-        try:
-            return self.db.query(Trade).filter(Trade.id == trade_id).first()
-        except Exception as e:
-            logger.error(f"Помилка отримання угоди {trade_id}: {e}")
-            return None
-
     def get_open_trades(self, pair: Optional[str] = None, is_paper: bool = True) -> List[Trade]:
         """Отримання відкритих угод"""
         try:
@@ -57,27 +49,24 @@ class DatabaseOperations:
 
     # === BALANCE ===
     def get_balance(self, asset: str = "USDT", is_paper: bool = True) -> float:
-        """Отримання балансу - через чистий SQLite"""
+        """Отримання балансу - через SQLAlchemy execute"""
         try:
+            from sqlalchemy import text
             paper_val = 1 if is_paper else 0
 
-            # Отримуємо сире з'єднання SQLite
-            connection = self.db.connection()
-            cursor = connection.cursor()
-
-            cursor.execute(
-                "SELECT amount FROM balances WHERE asset = ? AND is_paper = ?",
-                (asset, paper_val)
-            )
-            result = cursor.fetchone()
+            # Використовуємо execute з text()
+            result = self.db.execute(
+                text("SELECT amount FROM balances WHERE asset = :asset AND is_paper = :paper"),
+                {"asset": asset, "paper": paper_val}
+            ).fetchone()
 
             if result is None:
                 if is_paper:
-                    cursor.execute(
-                        "INSERT INTO balances (asset, amount, is_paper) VALUES (?, ?, ?)",
-                        (asset, 100.0, paper_val)
+                    self.db.execute(
+                        text("INSERT INTO balances (asset, amount, is_paper) VALUES (:asset, :amount, :paper)"),
+                        {"asset": asset, "amount": 100.0, "paper": paper_val}
                     )
-                    connection.commit()
+                    self.db.commit()
                     return 100.0
                 return 0.0
 
