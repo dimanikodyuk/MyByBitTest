@@ -57,33 +57,36 @@ class DatabaseOperations:
 
     # === BALANCE ===
     def get_balance(self, asset: str = "USDT", is_paper: bool = True) -> float:
-        """Отримання балансу - через прямий SQL"""
+        """Отримання балансу - максимально спрощено"""
         try:
-            from sqlalchemy import text
-            paper_int = 1 if is_paper else 0
+            paper_val = 1 if is_paper else 0
 
-            # Прямий SQL запит замість ORM
-            result = self.db.execute(
-                text("SELECT amount FROM balances WHERE asset = :asset AND is_paper = :paper"),
-                {"asset": asset, "paper": paper_int}
-            ).fetchone()
+            # Простий запит через filter
+            balance_obj = self.db.query(Balance).filter(
+                Balance.asset == asset,
+                Balance.is_paper == paper_val
+            ).first()
 
-            if result is None:
+            if balance_obj is None:
                 if is_paper:
-                    # Створюємо запис через прямий SQL
-                    self.db.execute(
-                        text("INSERT INTO balances (asset, amount, is_paper) VALUES (:asset, :amount, :paper)"),
-                        {"asset": asset, "amount": 100.0, "paper": paper_int}
-                    )
+                    # Створюємо новий баланс
+                    new_balance = Balance()
+                    new_balance.asset = asset
+                    new_balance.amount = 100.0
+                    new_balance.is_paper = paper_val
+                    self.db.add(new_balance)
                     self.db.commit()
                     return 100.0
                 return 0.0
 
-            return float(result[0])
+            # Перевіряємо чи є значення
+            if balance_obj.amount is None:
+                return 0.0
+            return float(balance_obj.amount)
 
         except Exception as e:
             logger.error(f"Помилка отримання балансу: {e}")
-            # При помилці повертаємо безпечне значення
+            # Безпечне значення при помилці
             return 100.0 if is_paper else 0.0
 
     def get_trade_by_id(self, trade_id: int) -> Optional[Trade]:
@@ -95,30 +98,26 @@ class DatabaseOperations:
             return None
 
     def update_balance(self, asset: str, amount: float, is_paper: bool = True):
-        """Оновлення балансу - через прямий SQL"""
+        """Оновлення балансу - максимально спрощено"""
         try:
-            from sqlalchemy import text
-            paper_int = 1 if is_paper else 0
+            paper_val = 1 if is_paper else 0
 
-            # Перевіряємо чи існує запис
-            result = self.db.execute(
-                text("SELECT id FROM balances WHERE asset = :asset AND is_paper = :paper"),
-                {"asset": asset, "paper": paper_int}
-            ).fetchone()
+            # Шукаємо існуючий запис
+            balance_obj = self.db.query(Balance).filter(
+                Balance.asset == asset,
+                Balance.is_paper == paper_val
+            ).first()
 
-            if result:
-                # Оновлюємо існуючий
-                self.db.execute(
-                    text(
-                        "UPDATE balances SET amount = :amount, updated_at = CURRENT_TIMESTAMP WHERE asset = :asset AND is_paper = :paper"),
-                    {"amount": amount, "asset": asset, "paper": paper_int}
-                )
+            if balance_obj:
+                # Оновлюємо
+                balance_obj.amount = amount
             else:
                 # Створюємо новий
-                self.db.execute(
-                    text("INSERT INTO balances (asset, amount, is_paper) VALUES (:asset, :amount, :paper)"),
-                    {"asset": asset, "amount": amount, "paper": paper_int}
-                )
+                balance_obj = Balance()
+                balance_obj.asset = asset
+                balance_obj.amount = amount
+                balance_obj.is_paper = paper_val
+                self.db.add(balance_obj)
 
             self.db.commit()
             logger.info(f"Баланс оновлено: {asset} = {amount} (paper={is_paper})")
@@ -128,20 +127,21 @@ class DatabaseOperations:
             self.db.rollback()
 
     def reset_paper_balance(self, initial_balance: float = 100.0):
-        """Скидання paper балансу - через прямий SQL"""
+        """Скидання paper балансу"""
         try:
-            from sqlalchemy import text
+            # Видаляємо paper угоди
+            self.db.query(Trade).filter(Trade.is_paper == 1).delete()
+            self.db.query(Order).filter(Order.is_paper == 1).delete()
 
-            # Видаляємо всі paper угоди
-            self.db.execute(text("DELETE FROM trades WHERE is_paper = 1"))
-            self.db.execute(text("DELETE FROM orders WHERE is_paper = 1"))
+            # Видаляємо paper баланс
+            self.db.query(Balance).filter(Balance.is_paper == 1).delete()
 
-            # Оновлюємо баланс
-            self.db.execute(text("DELETE FROM balances WHERE is_paper = 1"))
-            self.db.execute(
-                text("INSERT INTO balances (asset, amount, is_paper) VALUES (:asset, :amount, :paper)"),
-                {"asset": "USDT", "amount": initial_balance, "paper": 1}
-            )
+            # Створюємо новий баланс
+            new_balance = Balance()
+            new_balance.asset = "USDT"
+            new_balance.amount = initial_balance
+            new_balance.is_paper = 1
+            self.db.add(new_balance)
 
             self.db.commit()
             logger.info(f"Paper balance reset to {initial_balance} USDT")

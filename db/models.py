@@ -97,7 +97,7 @@ class Balance(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     asset = Column(String(20), nullable=False)
     amount = Column(Float, default=0.0)
-    is_paper = Column(Integer, default=1)  # 1 = paper, 0 = real
+    is_paper = Column(Integer, default=1)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
     __table_args__ = (
