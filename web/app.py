@@ -327,6 +327,177 @@ async def get_forecasts():
     return await get_active_forecasts()
 
 
+@app.get("/api/forecasts/history")
+async def get_forecasts_history(limit: int = 100, offset: int = 0):
+    """Отримання історії всіх прогнозів (активні + завершені)"""
+    db = SessionLocal()
+    try:
+        query = db.query(ForecastDB).order_by(ForecastDB.created_at.desc())
+        total = query.count()
+        forecasts = query.offset(offset).limit(limit).all()
+
+        result = []
+        for f in forecasts:
+            # Розраховуємо результат
+            if f.status == "completed":
+                if f.signal_type == "LONG":
+                    profit_percent = ((f.current_price - f.entry_price) / f.entry_price) * 100
+                else:
+                    profit_percent = ((f.entry_price - f.current_price) / f.entry_price) * 100
+                result_text = f"✅ Виконано (+{profit_percent:.1f}%)" if profit_percent > 0 else f"❌ Виконано ({profit_percent:.1f}%)"
+            elif f.status == "expired":
+                result_text = "⏰ Прострочено"
+            elif f.status == "failed":
+                result_text = "❌ Не виконано"
+            else:
+                result_text = "🟡 Активний"
+
+            result.append({
+                "id": f.forecast_id,
+                "pair": f.pair,
+                "signal_type": f.signal_type,
+                "entry_price": f.entry_price,
+                "target_price": f.target_price,
+                "current_price": f.current_price,
+                "confidence": f.confidence,
+                "status": f.status,
+                "result_text": result_text,
+                "created_at": make_aware(f.created_at).isoformat(),
+                "expires_at": make_aware(f.expires_at).isoformat(),
+                "closed_at": make_aware(f.closed_at).isoformat() if f.closed_at else None,
+                "profit_potential": ((f.target_price - f.entry_price) / f.entry_price) * 100
+            })
+
+        return {"forecasts": result, "total": total, "limit": limit, "offset": offset}
+    except Exception as e:
+        logger.error(f"Помилка отримання історії прогнозів: {e}")
+        return {"forecasts": [], "total": 0}
+    finally:
+        db.close()
+
+
+@app.get("/api/forecast/chart/{forecast_id}")
+async def get_forecast_chart(forecast_id: str, timeframe: str = "1h"):
+    """Отримання графіку для конкретного прогнозу з точками входу/виходу"""
+    from exchange.bybit_client import BybitClient
+    import pandas_ta as ta
+
+    db = SessionLocal()
+    try:
+        fid = float(forecast_id)
+        forecast = db.query(ForecastDB).filter(ForecastDB.forecast_id == fid).first()
+        if not forecast:
+            raise HTTPException(status_code=404, detail="Прогноз не знайдено")
+
+        # Отримуємо дані за 24 години до/після прогнозу
+        exchange = BybitClient()
+        start_time = forecast.created_at - timedelta(hours=12)
+        end_time = forecast.expires_at + timedelta(hours=12)
+
+        # Отримуємо свічки
+        df = exchange.get_klines(forecast.pair, timeframe, limit=300)
+
+        if df is None or df.empty:
+            raise HTTPException(status_code=404, detail="Дані не знайдено")
+
+        # Розраховуємо EMA
+        df['EMA_20'] = ta.ema(df['close'], length=20)
+        df['EMA_50'] = ta.ema(df['close'], length=50)
+        df['EMA_200'] = ta.ema(df['close'], length=200)
+
+        fig = go.Figure()
+
+        # Свічковий графік
+        fig.add_trace(go.Candlestick(
+            x=df['timestamp'],
+            open=df['open'],
+            high=df['high'],
+            low=df['low'],
+            close=df['close'],
+            name='Ціна',
+            showlegend=True
+        ))
+
+        # EMA лінії
+        fig.add_trace(go.Scatter(
+            x=df['timestamp'], y=df['EMA_20'],
+            name='EMA 20', line=dict(color='#f39c12', width=1.5)
+        ))
+        fig.add_trace(go.Scatter(
+            x=df['timestamp'], y=df['EMA_50'],
+            name='EMA 50', line=dict(color='#00d4ff', width=1.5)
+        ))
+        fig.add_trace(go.Scatter(
+            x=df['timestamp'], y=df['EMA_200'],
+            name='EMA 200', line=dict(color='#ff4757', width=1.5)
+        ))
+
+        # Точка входу (зелений трикутник)
+        fig.add_trace(go.Scatter(
+            x=[forecast.created_at],
+            y=[forecast.entry_price],
+            mode='markers',
+            name=f"Вхід {forecast.signal_type}",
+            marker=dict(
+                size=16,
+                color='green' if forecast.signal_type == 'LONG' else 'red',
+                symbol='triangle-up' if forecast.signal_type == 'LONG' else 'triangle-down',
+                line=dict(width=2, color='white')
+            ),
+            text=[
+                f"{forecast.signal_type} ВХІД<br>Ціна: ${forecast.entry_price:.0f}<br>Ціль: ${forecast.target_price:.0f}"],
+            hoverinfo='text',
+            hovertemplate='%{text}<extra></extra>'
+        ))
+
+        # Точка поточної ціни або закриття
+        if forecast.status == "completed":
+            fig.add_trace(go.Scatter(
+                x=[forecast.closed_at or forecast.expires_at],
+                y=[forecast.current_price],
+                mode='markers',
+                name='Результат',
+                marker=dict(size=14, color='white', symbol='circle', line=dict(width=2, color='black')),
+                text=[f"ЗАВЕРШЕНО<br>Ціна: ${forecast.current_price:.0f}<br>Статус: {forecast.result}"],
+                hoverinfo='text'
+            ))
+
+            # Лінія між входом і виходом (тільки для завершених прогнозів)
+            fig.add_trace(go.Scatter(
+                x=[forecast.created_at, forecast.closed_at or forecast.expires_at],
+                y=[forecast.entry_price, forecast.current_price],
+                mode='lines',
+                name='Траєкторія',
+                line=dict(color='#00d4ff', width=2, dash='dash')
+            ))
+
+        # Горизонтальна лінія цілі
+        fig.add_hline(
+            y=forecast.target_price,
+            line_dash="dash",
+            line_color="#00ff88",
+            annotation_text=f"Ціль: ${forecast.target_price:.0f}",
+            annotation_font_size=10
+        )
+
+        fig.update_layout(
+            title=f"{forecast.pair} - Прогноз {forecast.signal_type} від {forecast.created_at.strftime('%Y-%m-%d %H:%M')}",
+            xaxis_title="Час",
+            yaxis_title="Ціна (USDT)",
+            template="plotly_dark",
+            height=600,
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(26,26,46,0.5)',
+            xaxis_rangeslider_visible=False
+        )
+
+        return JSONResponse(content=json.loads(json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)))
+    except Exception as e:
+        logger.error(f"Помилка створення графіку прогнозу: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
 @app.delete("/api/forecast/{forecast_id}")
 async def delete_forecast(forecast_id: str):
     db = SessionLocal()
@@ -801,6 +972,7 @@ async def root():
         <div class="nav-content">
             <button class="nav-btn active" data-tab="dashboard">📊 Дашборд</button>
             <button class="nav-btn" data-tab="forecasts">🎯 Прогнози</button>
+            <button class="nav-btn" data-tab="forecasts_history">📜 Історія прогнозів</button>
             <button class="nav-btn" data-tab="analysis">📊 Аналіз</button>
             <button class="nav-btn" data-tab="charts">📈 Графіки</button>
             <button class="nav-btn" data-tab="advanced">📐 Покращена аналітика</button>
@@ -917,6 +1089,41 @@ async def root():
         </div>
     </div>
 </div>
+
+        <!-- ІСТОРІЯ ПРОГНОЗІВ -->
+        <div id="tab-forecasts_history" class="tab">
+            <div class="card">
+                <div class="card-header">
+                    <h3>📜 Історія всіх прогнозів</h3>
+                    <div style="display:flex;gap:10px;">
+                        <button class="btn btn-outline btn-sm" onclick="loadForecastsHistory()">🔄 Оновити</button>
+                    </div>
+                </div>
+                <div class="table-wrapper">
+                    <table style="width:100%; border-collapse: collapse;">
+                        <thead>
+                            <tr style="background: rgba(15,20,40,0.6);">
+                                <th style="padding: 12px; text-align: left; color: #667eea;">Час створення</th>
+                                <th style="padding: 12px; text-align: left; color: #667eea;">Пара</th>
+                                <th style="padding: 12px; text-align: left; color: #667eea;">Тип</th>
+                                <th style="padding: 12px; text-align: left; color: #667eea;">Вхід</th>
+                                <th style="padding: 12px; text-align: left; color: #667eea;">Ціль</th>
+                                <th style="padding: 12px; text-align: left; color: #667eea;">Поточна</th>
+                                <th style="padding: 12px; text-align: left; color: #667eea;">Впевн.</th>
+                                <th style="padding: 12px; text-align: left; color: #667eea;">Результат</th>
+                                <th style="padding: 12px; text-align: left; color: #667eea;">Дії</th>
+                            </tr>
+                        </thead>
+                        <tbody id="forecastsHistoryBody">
+                            <tr><td colspan="9" style="padding: 12px; text-align: center;">Завантаження...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div style="padding:15px;text-align:center;">
+                    <button class="btn btn-outline btn-sm" id="loadMoreHistoryBtn" onclick="loadMoreHistory()" style="display:none;">📥 Завантажити ще</button>
+                </div>
+            </div>
+        </div>
 
         <!-- АНАЛІЗ -->
         <div id="tab-analysis" class="tab">
@@ -1178,6 +1385,78 @@ async def root():
                 if (btn.dataset.tab === 'advanced') loadAdvancedStats();
             });
         });
+
+        // Історія прогнозів        
+        let historyOffset = 0;
+        let hasMoreHistory = true;
+        
+        async function loadForecastsHistory(reset = true) {
+            if (reset) {
+                historyOffset = 0;
+                hasMoreHistory = true;
+                document.getElementById('loadMoreHistoryBtn').style.display = 'none';
+            }
+            
+            try {
+                const res = await fetch(`/api/forecasts/history?limit=50&offset=${historyOffset}`);
+                const data = await res.json();
+                const body = document.getElementById('forecastsHistoryBody');
+                
+                if (!body) return;
+                
+                if (data.forecasts.length === 0 && historyOffset === 0) {
+                    body.innerHTML = '<tr><td colspan="9" style="padding: 12px; text-align: center;">Немає прогнозів</td></tr>';
+                    return;
+                }
+                
+                const rows = data.forecasts.map(f => `
+                    <tr>
+                        <td style="padding: 12px; white-space: nowrap;">${new Date(f.created_at).toLocaleString()}</td>
+                        <td style="padding: 12px;">${f.pair}</td>
+                        <td style="padding: 12px;"><span class="badge ${f.signal_type === 'LONG' ? 'badge-long' : 'badge-short'}">${f.signal_type === 'LONG' ? '📈 LONG' : '📉 SHORT'}</span></td>
+                        <td style="padding: 12px;">$${f.entry_price.toFixed(0)}</td>
+                        <td style="padding: 12px;">$${f.target_price.toFixed(0)}</td>
+                        <td style="padding: 12px;">$${f.current_price.toFixed(0)}</td>
+                        <td style="padding: 12px;">${f.confidence}%</td>
+                        <td style="padding: 12px;">${f.result_text}</td>
+                        <td style="padding: 12px;"><button class="btn btn-outline btn-sm" onclick="showForecastOnChart(${f.id})">📊 Графік</button></td>
+                    </tr>
+                `).join('');
+                
+                if (reset) {
+                    body.innerHTML = rows;
+                } else {
+                    body.innerHTML += rows;
+                }
+                
+                hasMoreHistory = data.forecasts.length === 50;
+                document.getElementById('loadMoreHistoryBtn').style.display = hasMoreHistory ? 'inline-block' : 'none';
+                historyOffset += data.forecasts.length;
+                
+            } catch(e) {
+                console.error('Помилка завантаження історії прогнозів:', e);
+            }
+        }
+        
+        async function showForecastOnChart(forecastId) {
+            // Перемикаємо на вкладку "Графіки"
+            document.querySelectorAll('.nav-btn').forEach(btn => {
+                if (btn.dataset.tab === 'charts') btn.click();
+            });
+            
+            try {
+                const res = await fetch(`/api/forecast/chart/${forecastId}?timeframe=1h`);
+                const data = await res.json();
+                Plotly.newPlot('priceChart', data.data, data.layout || {}, { responsive: true });
+            } catch(e) {
+                console.error('Помилка завантаження графіку прогнозу:', e);
+                alert('Не вдалося завантажити графік');
+            }
+        }
+        
+        async function loadMoreHistory() {
+            if (hasMoreHistory) await loadForecastsHistory(false);
+        }
 
         async function loadDashboard() {
     try {

@@ -31,24 +31,40 @@ class DatabaseOperations:
         return trade
 
     def get_open_trades(self, pair: Optional[str] = None, is_paper: bool = True) -> List[Trade]:
-        query = self.db.query(Trade).filter(
-            Trade.status == OrderStatus.PENDING,
-            Trade.is_paper == is_paper
-        )
-        if pair:
-            query = query.filter(Trade.pair == pair)
-        return query.all()
+        """Отримання відкритих угод"""
+        try:
+            query = self.db.query(Trade).filter(
+                Trade.status == OrderStatus.PENDING,
+                Trade.is_paper == int(is_paper)
+            )
+            if pair:
+                query = query.filter(Trade.pair == pair)
+            return query.all()
+        except Exception as e:
+            logger.error(f"Помилка отримання відкритих угод: {e}")
+            return []
 
     def get_trades_history(self, limit: int = 100, is_paper: bool = True) -> List[Trade]:
         return self.db.query(Trade).filter(Trade.is_paper == is_paper).order_by(Trade.opened_at.desc()).limit(limit).all()
 
     # === BALANCE ===
     def get_balance(self, asset: str = "USDT", is_paper: bool = True) -> float:
-        balance = self.db.query(Balance).filter(
-            Balance.asset == asset,
-            Balance.is_paper == is_paper
-        ).first()
-        return balance.amount if balance else 0.0
+        """Отримання балансу"""
+        try:
+            balance = self.db.query(Balance).filter(
+                Balance.asset == asset,
+                Balance.is_paper == int(is_paper)
+            ).first()
+
+            if balance is None and is_paper:
+                # Якщо балансу немає - створюємо з $100
+                self.update_balance(asset, 100.0, is_paper)
+                return 100.0
+
+            return balance.amount if balance else 0.0
+        except Exception as e:
+            logger.error(f"Помилка отримання балансу: {e}")
+            return 100.0 if is_paper else 0.0
 
     def update_balance(self, asset: str, amount: float, is_paper: bool = True):
         balance = self.db.query(Balance).filter(

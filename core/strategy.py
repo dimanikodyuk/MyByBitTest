@@ -114,6 +114,49 @@ class TradingStrategy:
 
         return df
 
+    def confirm_with_timeframe(self, df_15m: pd.DataFrame, df_1h: pd.DataFrame, signal: str) -> bool:
+        """Підтвердження сигналу на більших таймфреймах"""
+        if signal not in ["LONG", "SHORT"]:
+            return False
+
+        # Якщо немає даних для підтвердження - пропускаємо перевірку
+        if df_15m is None or len(df_15m) < 10:
+            return True
+
+        # Перевірка 15m
+        try:
+            last_15m = df_15m.iloc[-1]
+            if signal == "LONG":
+                ema_condition = last_15m[f'EMA_{self.ema_fast}'] > last_15m[f'EMA_{self.ema_slow}']
+                rsi_condition = last_15m['RSI'] > 40
+                if not (ema_condition and rsi_condition):
+                    return False
+            else:
+                ema_condition = last_15m[f'EMA_{self.ema_fast}'] < last_15m[f'EMA_{self.ema_slow}']
+                rsi_condition = last_15m['RSI'] < 60
+                if not (ema_condition and rsi_condition):
+                    return False
+        except Exception as e:
+            logger.debug(f"Помилка підтвердження на 15m: {e}")
+            return False
+
+        # Перевірка 1h
+        if df_1h is not None and len(df_1h) > 10:
+            try:
+                last_1h = df_1h.iloc[-1]
+                if signal == "LONG":
+                    ema_condition = last_1h[f'EMA_{self.ema_fast}'] > last_1h[f'EMA_{self.ema_slow}']
+                    if not ema_condition:
+                        return False
+                else:
+                    ema_condition = last_1h[f'EMA_{self.ema_fast}'] < last_1h[f'EMA_{self.ema_slow}']
+                    if not ema_condition:
+                        return False
+            except Exception as e:
+                logger.debug(f"Помилка підтвердження на 1h: {e}")
+
+        return True
+    
     def get_bollinger_signal(self, df: pd.DataFrame) -> str:
         """Сигнал на основі Bollinger Bands"""
         if 'BB_Position' not in df.columns:

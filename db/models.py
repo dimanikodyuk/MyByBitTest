@@ -131,12 +131,14 @@ class ForecastDB(Base):
     target_price = Column(Float, nullable=False)
     current_price = Column(Float, nullable=False)
     confidence = Column(Float, default=70)
-    status = Column(String(20), default="active")
+    status = Column(String(20), default="active")  # active, completed, failed, expired
+    result = Column(String(50), nullable=True)  # success, failed
     created_at = Column(DateTime, server_default=func.now())
     expires_at = Column(DateTime, nullable=False)
-    result = Column(String(50), nullable=True)
+    closed_at = Column(DateTime, nullable=True)  # ← ДОДАТИ ЦЕ
 
     __table_args__ = (
         Index('idx_forecasts_pair_status', 'pair', 'status'),
+        Index('idx_forecasts_created_at', 'created_at'),
         Index('idx_forecasts_expires_at', 'expires_at'),
     )

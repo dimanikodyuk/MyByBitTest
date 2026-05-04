@@ -184,16 +184,18 @@ class BybitClient:
 
         def handle_message(message):
             try:
+                if not message or 'topic' not in message:
+                    return
+
                 if f'kline.{ws_interval}.{symbol}' in message.get('topic', ''):
                     data_list = message.get('data', [])
                     if not data_list or len(data_list) == 0:
                         return
 
-                    data = data_list[0]  # Беремо перший елемент
-                    if not data:
+                    data = data_list[0]
+                    if not data or not isinstance(data, dict):
                         return
 
-                    # Перевіряємо наявність ключів
                     start = data.get('start')
                     if start is None:
                         return
