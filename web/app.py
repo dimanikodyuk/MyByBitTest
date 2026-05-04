@@ -411,9 +411,10 @@ async def get_forecast_info(forecast_id: str):
 
 @app.get("/api/forecast/chart/{forecast_id}")
 async def get_forecast_chart(forecast_id: str, timeframe: str = "1h"):
-    """Отримання графіку для конкретного прогнозу з правильним відображенням точок"""
+    """Отримання графіку для конкретного прогнозу"""
     from exchange.bybit_client import BybitClient
     import pandas_ta as ta
+    import traceback
 
     db = SessionLocal()
     try:
@@ -422,24 +423,30 @@ async def get_forecast_chart(forecast_id: str, timeframe: str = "1h"):
         if not forecast:
             raise HTTPException(status_code=404, detail="Прогноз не знайдено")
 
+        logger.info(f"Створення графіку для прогнозу {forecast_id}: {forecast.pair} {forecast.signal_type}")
+
         exchange = BybitClient()
 
-        # Розраховуємо часовий діапазон
-        created_at = make_aware(forecast.created_at)
-        now = get_current_time()
-
-        # Запитуємо дані від створення прогнозу до зараз (з запасом)
-        # Оскільки get_klines потребує limit, просто беремо 300 свічок
-        df = exchange.get_klines(forecast.pair, timeframe, limit=300)
+        # Отримуємо дані
+        df = exchange.get_klines(forecast.pair, timeframe, limit=200)
 
         if df is None or df.empty:
-            raise HTTPException(status_code=404, detail="Дані не знайдено")
+            logger.error(f"Немає даних для {forecast.pair}")
+            fig = go.Figure()
+            fig.update_layout(title=f"Немає даних для {forecast.pair}", template="plotly_dark", height=550)
+            return JSONResponse(content=json.loads(json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)))
 
-        # Фільтруємо дані тільки після створення прогнозу
-        df_filtered = df[df['timestamp'] >= created_at - timedelta(hours=12)]
+        # Конвертуємо timestamp в datetime
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+
+        # Конвертуємо forecast.created_at в pandas Timestamp
+        created_at_ts = pd.Timestamp(forecast.created_at)
+
+        # Фільтруємо дані
+        df_filtered = df[df['timestamp'] >= created_at_ts - pd.Timedelta(hours=24)]
 
         if df_filtered.empty:
-            df_filtered = df
+            df_filtered = df.tail(100)
 
         # Розраховуємо EMA
         df_filtered['EMA_20'] = ta.ema(df_filtered['close'], length=20)
@@ -473,14 +480,15 @@ async def get_forecast_chart(forecast_id: str, timeframe: str = "1h"):
             name='EMA 200', line=dict(color='#ff4757', width=1.5)
         ))
 
-        # Точка входу (зелений трикутник)
+        # Точка входу (конвертуємо created_at в правильний формат)
+        entry_time = pd.Timestamp(forecast.created_at)
         entry_color = '#00ff88' if forecast.signal_type == 'LONG' else '#ff4757'
         entry_symbol = 'triangle-up' if forecast.signal_type == 'LONG' else 'triangle-down'
 
         fig.add_trace(go.Scatter(
-            x=[forecast.created_at],
+            x=[entry_time],
             y=[forecast.entry_price],
-            mode='markers+lines',
+            mode='markers',
             name=f"Вхід {forecast.signal_type}",
             marker=dict(
                 size=18,
@@ -494,7 +502,7 @@ async def get_forecast_chart(forecast_id: str, timeframe: str = "1h"):
             hovertemplate='%{text}<extra></extra>'
         ))
 
-        # Поточна ціна (тільки якщо вона після входу)
+        # Поточна ціна
         current_price = df_filtered['close'].iloc[-1]
         current_time = df_filtered['timestamp'].iloc[-1]
 
@@ -508,27 +516,6 @@ async def get_forecast_chart(forecast_id: str, timeframe: str = "1h"):
             hoverinfo='text',
             hovertemplate='%{text}<extra></extra>'
         ))
-
-        # Якщо прогноз завершено, додаємо точку завершення та лінію між входом і виходом
-        if forecast.status == "completed" and forecast.closed_at:
-            fig.add_trace(go.Scatter(
-                x=[forecast.closed_at],
-                y=[forecast.current_price],
-                mode='markers',
-                name='Завершення',
-                marker=dict(size=14, color='#ffa502', symbol='square', line=dict(width=2, color='white')),
-                text=[f"<b>ЗАВЕРШЕНО</b><br>Ціна: ${forecast.current_price:.0f}<br>Результат: {forecast.result}"],
-                hoverinfo='text'
-            ))
-
-            # Лінія між входом і завершенням
-            fig.add_trace(go.Scatter(
-                x=[forecast.created_at, forecast.closed_at],
-                y=[forecast.entry_price, forecast.current_price],
-                mode='lines',
-                name='Траєкторія',
-                line=dict(color='#00d4ff', width=2, dash='dash')
-            ))
 
         # Горизонтальна лінія цілі
         fig.add_hline(
@@ -553,9 +540,14 @@ async def get_forecast_chart(forecast_id: str, timeframe: str = "1h"):
         )
 
         return JSONResponse(content=json.loads(json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)))
+
     except Exception as e:
         logger.error(f"Помилка створення графіку прогнозу: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(traceback.format_exc())
+        # Повертаємо порожній графік замість помилки
+        fig = go.Figure()
+        fig.update_layout(title=f"Помилка завантаження даних: {str(e)[:100]}", template="plotly_dark", height=550)
+        return JSONResponse(content=json.loads(json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)))
     finally:
         db.close()
 
