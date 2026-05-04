@@ -297,9 +297,6 @@ async def update_testing_settings(settings: Dict[str, Any]):
         logger.error(f"Помилка збереження testing налаштувань: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-    except Exception as e:
-        logger.error(f"Помилка збереження testing налаштувань: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/trade/chart/{trade_id}")
 async def get_trade_chart(trade_id: int, timeframe: str = "1h"):
