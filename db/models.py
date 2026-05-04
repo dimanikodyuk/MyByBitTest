@@ -131,11 +131,17 @@ class ForecastDB(Base):
     target_price = Column(Float, nullable=False)
     current_price = Column(Float, nullable=False)
     confidence = Column(Float, default=70)
-    status = Column(String(20), default="active")  # active, completed, failed, expired
-    result = Column(String(50), nullable=True)  # success, failed
+    status = Column(String(20), default="active")
     created_at = Column(DateTime, server_default=func.now())
     expires_at = Column(DateTime, nullable=False)
-    closed_at = Column(DateTime, nullable=True)  # ← ДОДАТИ ЦЕ
+    closed_at = Column(DateTime, nullable=True)
+    result = Column(String(50), nullable=True)
+
+    # Додаткові поля для PnL
+    position_quantity = Column(Float, default=0.0)  # Кількість монет
+    position_usdt = Column(Float, default=0.0)  # Розмір позиції в USDT
+    current_pnl = Column(Float, default=0.0)  # Поточний PnL
+    closed_pnl = Column(Float, default=0.0)  # Фінальний PnL
 
     __table_args__ = (
         Index('idx_forecasts_pair_status', 'pair', 'status'),

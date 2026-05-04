@@ -17,12 +17,12 @@ import pandas as pd
 import yaml
 from pathlib import Path
 import pytz
-
 from db.database import SessionLocal
 from db.operations import DatabaseOperations
-from db.models import Signal, Trade, Log, ForecastDB
+from db.models import Signal, Trade, Log, ForecastDB, OrderSide
 from utils.config_loader import config
 from utils.logger import logger
+from sqlalchemy import text
 
 app = FastAPI(title="AutoTrading Bot API", version="3.0.0")
 
@@ -90,6 +90,8 @@ async def get_active_forecasts():
                 "target_price": f.target_price,
                 "current_price": f.current_price,
                 "confidence": f.confidence,
+                "position_quantity": f.position_quantity,
+                "position_usdt": f.position_usdt,  # ← ДОДАТИ ЦЕ
                 "created_at": make_aware(f.created_at).isoformat(),
                 "expires_at": make_aware(f.expires_at).isoformat(),
                 "time_remaining": max(0, (make_aware(f.expires_at) - now).total_seconds()),
@@ -105,7 +107,9 @@ async def get_active_forecasts():
         db.close()
 
 
-async def create_forecast_internal(pair, signal_type, entry_price, target_price, confidence):
+async def create_forecast_internal(pair, signal_type, entry_price, target_price, confidence,
+                                   position_quantity=0.0, position_usdt=0.0):
+    """Створення прогнозу з розміром позиції"""
     db = SessionLocal()
     try:
         forecast_id = datetime.now().timestamp()
@@ -129,6 +133,8 @@ async def create_forecast_internal(pair, signal_type, entry_price, target_price,
             target_price=target_price,
             current_price=entry_price,
             confidence=confidence,
+            position_quantity=position_quantity,  # ← змінено назву
+            position_usdt=position_usdt,
             created_at=now,
             expires_at=now + timedelta(hours=4),
             status="active"
@@ -144,6 +150,8 @@ async def create_forecast_internal(pair, signal_type, entry_price, target_price,
             "target_price": target_price,
             "current_price": entry_price,
             "confidence": confidence,
+            "position_quantity": position_quantity,
+            "position_usdt": position_usdt,
             "created_at": now.isoformat(),
             "expires_at": (now + timedelta(hours=4)).isoformat(),
             "time_remaining": 4 * 3600,
@@ -160,7 +168,7 @@ async def create_forecast_internal(pair, signal_type, entry_price, target_price,
             except:
                 pass
 
-        logger.info(f"Прогноз збережено в БД: {pair} {signal_type}")
+        logger.info(f"✅ Прогноз збережено: {pair} {signal_type} | ${position_usdt:.2f}")
         return forecast
 
     except Exception as e:
@@ -189,6 +197,249 @@ async def update_forecast_prices():
     finally:
         db.close()
 
+
+@app.get("/health")
+async def health_check():
+    """Перевірка стану бота для моніторингу"""
+    import platform
+
+    # Статус бота
+    bot_status = "running" if order_manager_ref and order_manager_ref.running else "stopped"
+
+    # Статус БД
+    db_status = "ok"
+    db_error = None
+    try:
+        db = SessionLocal()
+        db.execute(text("SELECT 1"))  # ← ДОДАТИ text()
+        db.close()
+    except Exception as e:
+        db_status = "error"
+        db_error = str(e)[:100]
+
+    # Баланс
+    balance = 0
+    try:
+        db = SessionLocal()
+        db_ops = DatabaseOperations(db)
+        balance = db_ops.get_balance("USDT", is_paper=True)
+        db.close()
+    except Exception as e:
+        balance = 100.0
+
+    # Час роботи
+    uptime_seconds = None
+    if hasattr(order_manager_ref, 'start_time') and order_manager_ref.start_time:
+        try:
+            uptime_delta = get_current_time() - order_manager_ref.start_time
+            uptime_seconds = int(uptime_delta.total_seconds())
+        except:
+            pass
+
+    # Статус healthy якщо бот працює
+    is_healthy = bot_status == "running"
+
+    return {
+        "status": "healthy" if is_healthy else "unhealthy",
+        "timestamp": get_current_time().isoformat(),
+        "server_time": get_current_time().isoformat(),
+        "bot": {
+            "status": bot_status,
+            "mode": config.bot_mode,
+            "version": "3.0.0",
+            "uptime_seconds": uptime_seconds
+        },
+        "database": {
+            "status": db_status,
+            "error": db_error
+        },
+        "balance": {
+            "paper_usdt": balance
+        },
+        "system": {
+            "python_version": platform.python_version(),
+            "platform": platform.system()
+        }
+    }
+
+
+@app.post("/api/settings/testing")
+async def update_testing_settings(settings: Dict[str, Any]):
+    """Оновлення testing налаштувань"""
+    import yaml
+    from pathlib import Path
+
+    config_path = Path(__file__).parent.parent / "config.yaml"
+
+    try:
+        # Читаємо поточний конфіг
+        with open(config_path, 'r', encoding='utf-8') as f:
+            current_config = yaml.safe_load(f)
+
+        # Оновлюємо testing секцію
+        if 'testing' not in current_config:
+            current_config['testing'] = {}
+
+        for key, value in settings.items():
+            current_config['testing'][key] = value
+
+        # Зберігаємо конфіг
+        with open(config_path, 'w', encoding='utf-8') as f:
+            yaml.dump(current_config, f, allow_unicode=True, default_flow_style=False)
+
+        # Оновлюємо глобальний конфіг
+        from utils.config_loader import reload_config
+        reload_config()
+
+        return {"status": "success", "message": "Налаштування збережено"}
+
+    except Exception as e:
+        logger.error(f"Помилка збереження testing налаштувань: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+    except Exception as e:
+        logger.error(f"Помилка збереження testing налаштувань: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/trade/chart/{trade_id}")
+async def get_trade_chart(trade_id: int, timeframe: str = "1h"):
+    """Отримання графіку для конкретної угоди"""
+    from exchange.bybit_client import BybitClient
+    import pandas_ta as ta
+    import traceback
+
+    db = SessionLocal()
+    try:
+        trade = db.query(Trade).filter(Trade.id == trade_id).first()
+        if not trade:
+            raise HTTPException(status_code=404, detail="Угода не знайдена")
+
+        logger.info(f"Створення графіку для угоди {trade_id}: {trade.pair}")
+
+        exchange = BybitClient()
+
+        # Отримуємо дані
+        df = exchange.get_klines(trade.pair, timeframe, limit=300)
+
+        if df is None or df.empty:
+            fig = go.Figure()
+            fig.update_layout(title=f"Немає даних для {trade.pair}", template="plotly_dark", height=600)
+            return JSONResponse(content=json.loads(json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)))
+
+        # Конвертуємо час
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        df['display_time'] = df['timestamp'].dt.tz_localize('UTC').dt.tz_convert(KYIV_TZ)
+
+        # Розраховуємо EMA
+        df['EMA_20'] = ta.ema(df['close'], length=20)
+        df['EMA_50'] = ta.ema(df['close'], length=50)
+        df['EMA_200'] = ta.ema(df['close'], length=200)
+
+        # Час входу та виходу
+        entry_time = trade.opened_at
+        if entry_time.tzinfo is None:
+            entry_time = KYIV_TZ.localize(entry_time)
+
+        entry_display = entry_time
+        exit_time = None
+        if trade.closed_at:
+            exit_time = trade.closed_at
+            if exit_time.tzinfo is None:
+                exit_time = KYIV_TZ.localize(exit_time)
+
+        fig = go.Figure()
+
+        # Свічковий графік
+        fig.add_trace(go.Candlestick(
+            x=df['display_time'],
+            open=df['open'],
+            high=df['high'],
+            low=df['low'],
+            close=df['close'],
+            name='Ціна',
+            showlegend=True
+        ))
+
+        # EMA лінії
+        fig.add_trace(go.Scatter(
+            x=df['display_time'], y=df['EMA_20'],
+            name='EMA 20', line=dict(color='#f39c12', width=1.5)
+        ))
+        fig.add_trace(go.Scatter(
+            x=df['display_time'], y=df['EMA_50'],
+            name='EMA 50', line=dict(color='#00d4ff', width=1.5)
+        ))
+        fig.add_trace(go.Scatter(
+            x=df['display_time'], y=df['EMA_200'],
+            name='EMA 200', line=dict(color='#ff4757', width=1.5)
+        ))
+
+        # Точка входу
+        entry_color = '#00ff88' if trade.side == OrderSide.BUY else '#ff4757'
+        entry_symbol = 'triangle-up' if trade.side == OrderSide.BUY else 'triangle-down'
+
+        fig.add_trace(go.Scatter(
+            x=[entry_display],
+            y=[trade.entry_price],
+            mode='markers',
+            name='Вхід',
+            marker=dict(size=20, color=entry_color, symbol=entry_symbol, line=dict(width=2, color='white')),
+            text=[f"<b>ВХІД</b><br>Ціна: ${trade.entry_price:.0f}<br>Кількість: {trade.quantity}"],
+            hoverinfo='text'
+        ))
+
+        # Точка виходу (якщо є)
+        if exit_time:
+            exit_color = '#00ff88' if trade.pnl > 0 else '#ff4757'
+            fig.add_trace(go.Scatter(
+                x=[exit_time],
+                y=[trade.exit_price],
+                mode='markers',
+                name='Вихід',
+                marker=dict(size=14, color='white', symbol='circle', line=dict(width=2, color=exit_color)),
+                text=[
+                    f"<b>ВИХІД</b><br>Ціна: ${trade.exit_price:.0f}<br>PnL: ${trade.pnl:.2f} ({trade.pnl_percent:.1f}%)"],
+                hoverinfo='text'
+            ))
+
+            # Лінія між входом і виходом
+            fig.add_trace(go.Scatter(
+                x=[entry_display, exit_time],
+                y=[trade.entry_price, trade.exit_price],
+                mode='lines',
+                name='Траєкторія',
+                line=dict(color='#00d4ff', width=2, dash='dash'),
+                showlegend=False
+            ))
+
+        fig.update_xaxes(
+            tickformat="%H:%M<br>%d/%m",
+            tickangle=-45,
+            title_text="Час (Київ)",
+            rangeslider_visible=False
+        )
+
+        fig.update_layout(
+            title=f"{trade.pair} - Угода",
+            xaxis_title="Час (Київ)",
+            yaxis_title="Ціна (USDT)",
+            template="plotly_dark",
+            height=600,
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(26,26,46,0.5)',
+            hovermode='closest'
+        )
+
+        return JSONResponse(content=json.loads(json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)))
+
+    except Exception as e:
+        logger.error(f"Помилка створення графіку угоди: {e}")
+        logger.error(traceback.format_exc())
+        fig = go.Figure()
+        fig.update_layout(title=f"Помилка: {str(e)[:100]}", template="plotly_dark", height=600)
+        return JSONResponse(content=json.loads(json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)))
+    finally:
+        db.close()
 
 # ============ WEBSOCKET ============
 
@@ -225,6 +476,17 @@ async def websocket_endpoint(websocket: WebSocket):
         if websocket in active_websockets:
             active_websockets.remove(websocket)
 
+@app.get("/api/current_price/{pair}")
+async def get_current_price(pair: str):
+    """Отримання поточної ціни для пари"""
+    from exchange.bybit_client import BybitClient
+    exchange = BybitClient()
+    try:
+        price = exchange.get_current_price(pair)
+        return {"price": price}
+    except Exception as e:
+        logger.error(f"Помилка отримання ціни для {pair}: {e}")
+        return {"price": None}
 
 # ============ API ЕНДПОІНТИ ============
 
@@ -259,6 +521,13 @@ async def get_status():
     finally:
         db.close()
 
+@app.post("/api/trade/close/{trade_id}")
+async def close_trade_manually(trade_id: int, price: float = None):
+    """Примусове закриття угоди"""
+    if order_manager_ref:
+        result = await order_manager_ref.close_trade_manually(trade_id, price)
+        return result
+    return {"error": "Order manager not available"}
 
 @app.get("/api/trades")
 async def get_trades(limit: int = 50):
@@ -276,8 +545,9 @@ async def get_trades(limit: int = 50):
                 "quantity": t.quantity,
                 "pnl": t.pnl,
                 "pnl_percent": t.pnl_percent,
-                "opened_at": t.opened_at.isoformat(),
-                "closed_at": t.closed_at.isoformat() if t.closed_at else None
+                # Додаємо 3 години до UTC часу
+                "opened_at": (t.opened_at + timedelta(hours=3)).isoformat() if t.opened_at else None,
+                "closed_at": (t.closed_at + timedelta(hours=3)).isoformat() if t.closed_at else None
             }
             for t in trades
         ]
@@ -408,10 +678,24 @@ async def get_forecast_info(forecast_id: str):
     finally:
         db.close()
 
+@app.get("/api/settings/testing")
+async def get_testing_settings():
+    """Отримання testing налаштувань"""
+    try:
+        return {
+            "create_trades_from_forecasts": config.get('testing.create_trades_from_forecasts', False),
+            "forecast_position_percent": config.get('testing.forecast_position_percent', 25.0)
+        }
+    except Exception as e:
+        logger.error(f"Помилка отримання testing налаштувань: {e}")
+        return {
+            "create_trades_from_forecasts": False,
+            "forecast_position_percent": 25.0
+        }
 
 @app.get("/api/forecast/chart/{forecast_id}")
 async def get_forecast_chart(forecast_id: str, timeframe: str = "1h"):
-    """Отримання графіку для конкретного прогнозу - виправлено час"""
+    """Отримання графіку для конкретного прогнозу - ВИПРАВЛЕНО"""
     from exchange.bybit_client import BybitClient
     import pandas_ta as ta
     import traceback
@@ -424,34 +708,48 @@ async def get_forecast_chart(forecast_id: str, timeframe: str = "1h"):
             raise HTTPException(status_code=404, detail="Прогноз не знайдено")
 
         logger.info(f"Створення графіку для прогнозу {forecast_id}")
+        logger.info(f"forecast.created_at (з БД): {forecast.created_at}")
 
         exchange = BybitClient()
 
         # Отримуємо дані
-        df = exchange.get_klines(forecast.pair, timeframe, limit=200)
+        df = exchange.get_klines(forecast.pair, timeframe, limit=300)
 
         if df is None or df.empty:
             fig = go.Figure()
             fig.update_layout(title=f"Немає даних для {forecast.pair}", template="plotly_dark", height=550)
             return JSONResponse(content=json.loads(json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)))
 
-        # Конвертуємо timestamp з UTC в локальний час Києва
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
-        # ByBit повертає UTC, конвертуємо в Kyiv
-        df['timestamp'] = df['timestamp'].dt.tz_localize('UTC').dt.tz_convert(KYIV_TZ)
+        # ByBit повертає timestamp в мілісекундах (UTC)
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
 
-        # Конвертуємо forecast.created_at (вже в Kyiv)
-        entry_time = pd.Timestamp(forecast.created_at).tz_localize(KYIV_TZ)
+        # Створюємо колонку з київським часом для відображення
+        df['display_time'] = df['timestamp'].dt.tz_localize('UTC').dt.tz_convert(KYIV_TZ)
 
-        # Визначаємо діапазон для відображення
-        min_time = entry_time - pd.Timedelta(hours=12)
-        max_time = df['timestamp'].max()
+        # forecast.created_at ВЖЕ в київському часі (з БД)
+        # Просто використовуємо його як є, без додаткової конвертації
+        entry_time = forecast.created_at
 
-        # Фільтруємо дані
-        df_filtered = df[(df['timestamp'] >= min_time) & (df['timestamp'] <= max_time)]
+        # Якщо entry_time без часового поясу - додаємо київський
+        if entry_time.tzinfo is None:
+            entry_time = KYIV_TZ.localize(entry_time)
+
+        # Конвертуємо entry_time в UTC для фільтрації даних
+        entry_time_utc = entry_time.astimezone(pytz.UTC)
+
+        logger.info(f"Час входу (Київ): {entry_time}")
+        logger.info(f"Час входу (UTC): {entry_time_utc}")
+
+        # Фільтруємо дані - показуємо 24 години до прогнозу
+        start_filter = entry_time_utc - pd.Timedelta(hours=24)
+
+        # Конвертуємо timestamp в UTC для порівняння
+        df['timestamp_utc'] = df['timestamp'].dt.tz_localize('UTC')
+        df_filtered = df[df['timestamp_utc'] >= start_filter]
 
         if df_filtered.empty:
-            df_filtered = df.tail(100)
+            df_filtered = df.tail(150)
+            df_filtered['display_time'] = df_filtered['timestamp'].dt.tz_localize('UTC').dt.tz_convert(KYIV_TZ)
 
         # Розраховуємо EMA
         df_filtered['EMA_20'] = ta.ema(df_filtered['close'], length=20)
@@ -460,9 +758,9 @@ async def get_forecast_chart(forecast_id: str, timeframe: str = "1h"):
 
         fig = go.Figure()
 
-        # Свічковий графік з форматуванням часу
+        # Свічковий графік
         fig.add_trace(go.Candlestick(
-            x=df_filtered['timestamp'],
+            x=df_filtered['display_time'],
             open=df_filtered['open'],
             high=df_filtered['high'],
             low=df_filtered['low'],
@@ -473,19 +771,19 @@ async def get_forecast_chart(forecast_id: str, timeframe: str = "1h"):
 
         # EMA лінії
         fig.add_trace(go.Scatter(
-            x=df_filtered['timestamp'], y=df_filtered['EMA_20'],
+            x=df_filtered['display_time'], y=df_filtered['EMA_20'],
             name='EMA 20', line=dict(color='#f39c12', width=1.5)
         ))
         fig.add_trace(go.Scatter(
-            x=df_filtered['timestamp'], y=df_filtered['EMA_50'],
+            x=df_filtered['display_time'], y=df_filtered['EMA_50'],
             name='EMA 50', line=dict(color='#00d4ff', width=1.5)
         ))
         fig.add_trace(go.Scatter(
-            x=df_filtered['timestamp'], y=df_filtered['EMA_200'],
+            x=df_filtered['display_time'], y=df_filtered['EMA_200'],
             name='EMA 200', line=dict(color='#ff4757', width=1.5)
         ))
 
-        # Точка входу
+        # Точка входу (використовуємо КИЇВСЬКИЙ час без змін)
         entry_color = '#00ff88' if forecast.signal_type == 'LONG' else '#ff4757'
         entry_symbol = 'triangle-up' if forecast.signal_type == 'LONG' else 'triangle-down'
 
@@ -495,38 +793,39 @@ async def get_forecast_chart(forecast_id: str, timeframe: str = "1h"):
             mode='markers',
             name=f"Вхід {forecast.signal_type}",
             marker=dict(
-                size=18,
+                size=20,
                 color=entry_color,
                 symbol=entry_symbol,
                 line=dict(width=2, color='white')
             ),
             text=[
-                f"<b>{forecast.signal_type} ВХІД</b><br>Ціна: ${forecast.entry_price:.0f}<br>Ціль: ${forecast.target_price:.0f}<br>Впевненість: {forecast.confidence}%"],
+                f"<b>{forecast.signal_type} ВХІД</b><br>Ціна: ${forecast.entry_price:.0f}<br>Ціль: ${forecast.target_price:.0f}<br>Впевненість: {forecast.confidence}%<br>Час: {entry_time.strftime('%Y-%m-%d %H:%M')}"],
             hoverinfo='text',
             hovertemplate='%{text}<extra></extra>'
         ))
 
-        # Поточна ціна
+        # Поточна ціна (остання свічка)
         current_price = df_filtered['close'].iloc[-1]
-        current_time = df_filtered['timestamp'].iloc[-1]
+        current_display_time = df_filtered['display_time'].iloc[-1]
 
-        # Додаємо лінію від входу до поточної ціни
-        if current_time > entry_time:
+        # Лінія від входу до поточної ціни (тільки якщо поточний час після входу)
+        if current_display_time > entry_time:
             fig.add_trace(go.Scatter(
-                x=[entry_time, current_time],
+                x=[entry_time, current_display_time],
                 y=[forecast.entry_price, current_price],
                 mode='lines',
                 name='Траєкторія',
-                line=dict(color='#00d4ff', width=2, dash='dash')
+                line=dict(color='#00d4ff', width=2, dash='dash'),
+                showlegend=False
             ))
 
         fig.add_trace(go.Scatter(
-            x=[current_time],
+            x=[current_display_time],
             y=[current_price],
             mode='markers',
             name='Поточна ціна',
             marker=dict(size=14, color='white', symbol='circle', line=dict(width=2, color='#00d4ff')),
-            text=[f"<b>ПОТОЧНА ЦІНА</b><br>${current_price:.0f}<br>{current_time.strftime('%Y-%m-%d %H:%M')}"],
+            text=[f"<b>ПОТОЧНА ЦІНА</b><br>${current_price:.0f}<br>{current_display_time.strftime('%Y-%m-%d %H:%M')}"],
             hoverinfo='text',
             hovertemplate='%{text}<extra></extra>'
         ))
@@ -542,22 +841,21 @@ async def get_forecast_chart(forecast_id: str, timeframe: str = "1h"):
             annotation_x=0.02
         )
 
-        # Налаштування осі X для правильного відображення часу
         fig.update_xaxes(
             tickformat="%H:%M<br>%d/%m",
             tickangle=-45,
-            title_text="Час (Київ)"
+            title_text="Час (Київ)",
+            rangeslider_visible=False
         )
 
         fig.update_layout(
-            title=f"{forecast.pair} - Прогноз {forecast.signal_type}",
+            title=f"{forecast.pair} - Прогноз {forecast.signal_type} від {entry_time.strftime('%Y-%m-%d %H:%M')}",
             xaxis_title="Час (Київ)",
             yaxis_title="Ціна (USDT)",
             template="plotly_dark",
             height=550,
             paper_bgcolor='rgba(0,0,0,0)',
             plot_bgcolor='rgba(26,26,46,0.5)',
-            xaxis_rangeslider_visible=False,
             hovermode='closest',
             hoverlabel=dict(
                 bgcolor="rgba(0,0,0,0.8)",
@@ -662,7 +960,15 @@ async def get_pnl_chart_data():
 
 
 @app.get("/api/chart/{pair}")
-async def get_chart(pair: str, timeframe: str = "1h", limit: int = 200):
+async def get_chart(
+        pair: str,
+        timeframe: str = "1h",
+        limit: int = 200,
+        show_trades: bool = True,
+        start_date: str = None,
+        end_date: str = None
+):
+    """Отримання свічкового графіку з EMA та опціональними точками угод"""
     from exchange.bybit_client import BybitClient
     import pandas_ta as ta
 
@@ -676,12 +982,29 @@ async def get_chart(pair: str, timeframe: str = "1h", limit: int = 200):
     df['timestamp'] = pd.to_datetime(df['timestamp'])
     df['timestamp'] = df['timestamp'].dt.tz_localize('UTC').dt.tz_convert(KYIV_TZ)
 
+    # Розраховуємо EMA
     df['EMA_20'] = ta.ema(df['close'], length=20)
     df['EMA_50'] = ta.ema(df['close'], length=50)
     df['EMA_200'] = ta.ema(df['close'], length=200)
 
-    fig = go.Figure()
+    # RSI для нижнього графіку
+    df['RSI'] = ta.rsi(df['close'], length=14)
 
+    # Volume
+    df['Volume_MA'] = ta.sma(df['volume'], length=20)
+
+    from plotly.subplots import make_subplots
+
+    # Створюємо графік з 3 рядами
+    fig = make_subplots(
+        rows=3, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.03,
+        row_heights=[0.6, 0.2, 0.2],
+        subplot_titles=(f"{pair} - Свічковий графік з EMA", "RSI (14)", "Volume")
+    )
+
+    # Ряд 1: Свічковий графік + EMA
     fig.add_trace(go.Candlestick(
         x=df['timestamp'],
         open=df['open'],
@@ -690,39 +1013,158 @@ async def get_chart(pair: str, timeframe: str = "1h", limit: int = 200):
         close=df['close'],
         name='Ціна',
         showlegend=True
-    ))
+    ), row=1, col=1)
 
     fig.add_trace(go.Scatter(
         x=df['timestamp'], y=df['EMA_20'],
         name='EMA 20', line=dict(color='#f39c12', width=1.5)
-    ))
+    ), row=1, col=1)
+
     fig.add_trace(go.Scatter(
         x=df['timestamp'], y=df['EMA_50'],
         name='EMA 50', line=dict(color='#00d4ff', width=1.5)
-    ))
+    ), row=1, col=1)
+
     fig.add_trace(go.Scatter(
         x=df['timestamp'], y=df['EMA_200'],
         name='EMA 200', line=dict(color='#ff4757', width=1.5)
-    ))
+    ), row=1, col=1)
 
+    # Ряд 2: RSI
+    fig.add_trace(go.Scatter(
+        x=df['timestamp'], y=df['RSI'],
+        name='RSI', line=dict(color='#00ff88', width=1.5)
+    ), row=2, col=1)
+
+    # Рівні RSI
+    fig.add_hline(y=70, line_dash="dash", line_color="#ff4757", row=2, col=1)
+    fig.add_hline(y=30, line_dash="dash", line_color="#00ff88", row=2, col=1)
+    fig.add_hrect(y0=30, y1=70, fillcolor="rgba(102,126,234,0.1)", line_width=0, row=2, col=1)
+
+    # Ряд 3: Volume
+    colors = ['#00ff88' if close >= open else '#ff4757' for close, open in zip(df['close'], df['open'])]
+    fig.add_trace(go.Bar(
+        x=df['timestamp'], y=df['volume'],
+        name='Volume', marker_color=colors, opacity=0.7
+    ), row=3, col=1)
+
+    # Лінія середнього об'єму
+    fig.add_trace(go.Scatter(
+        x=df['timestamp'], y=df['Volume_MA'],
+        name='Volume MA(20)', line=dict(color='#f39c12', width=1, dash='dash')
+    ), row=3, col=1)
+
+    # Додаємо точки угод, якщо потрібно (через параметр)
+    if show_trades:
+        db = SessionLocal()
+        db_ops = DatabaseOperations(db)
+        try:
+            trades = db_ops.get_trades_history(limit=100, is_paper=True)
+            pair_trades = [t for t in trades if t.pair == pair]
+
+            # Відкриті угоди (активні)
+            open_trades = [t for t in pair_trades if t.status.value == "PENDING"]
+            # Закриті угоди
+            closed_trades = [t for t in pair_trades if t.status.value == "CLOSED"]
+
+            # Точки відкритих угод (жовті трикутники)
+            for trade in open_trades:
+                trade_time = pd.Timestamp(trade.opened_at).tz_localize(KYIV_TZ)
+                fig.add_trace(go.Scatter(
+                    x=[trade_time],
+                    y=[trade.entry_price],
+                    mode='markers',
+                    name='Відкрита угода',
+                    marker=dict(
+                        size=12,
+                        color='#ffa502',
+                        symbol='star',
+                        line=dict(width=1, color='white')
+                    ),
+                    text=[f"ВІДКРИТА<br>Вхід: ${trade.entry_price:.0f}<br>Кількість: {trade.quantity}"],
+                    hoverinfo='text',
+                    showlegend=False
+                ), row=1, col=1)
+
+            # Точки закритих угод
+            for trade in closed_trades:
+                entry_time = pd.Timestamp(trade.opened_at).tz_localize(KYIV_TZ)
+                exit_time = pd.Timestamp(trade.closed_at).tz_localize(KYIV_TZ) if trade.closed_at else entry_time
+
+                color = '#00ff88' if trade.pnl > 0 else '#ff4757'
+                symbol = 'triangle-up' if trade.side.value == 'BUY' else 'triangle-down'
+
+                # Точка входу
+                fig.add_trace(go.Scatter(
+                    x=[entry_time],
+                    y=[trade.entry_price],
+                    mode='markers',
+                    name='Вхід',
+                    marker=dict(size=10, color=color, symbol=symbol),
+                    text=[f"ВХІД<br>Ціна: ${trade.entry_price:.0f}<br>PnL: ${trade.pnl:.2f}"],
+                    hoverinfo='text',
+                    showlegend=False
+                ), row=1, col=1)
+
+                # Точка виходу
+                fig.add_trace(go.Scatter(
+                    x=[exit_time],
+                    y=[trade.exit_price],
+                    mode='markers',
+                    name='Вихід',
+                    marker=dict(size=10, color='white', symbol='circle'),
+                    text=[f"ВИХІД<br>Ціна: ${trade.exit_price:.0f}<br>PnL: ${trade.pnl:.2f}"],
+                    hoverinfo='text',
+                    showlegend=False
+                ), row=1, col=1)
+
+                # Лінія між входом і виходом (тільки для закритих)
+                fig.add_trace(go.Scatter(
+                    x=[entry_time, exit_time],
+                    y=[trade.entry_price, trade.exit_price],
+                    mode='lines',
+                    name='Угода',
+                    line=dict(color=color, width=1.5, dash='dash'),
+                    showlegend=False
+                ), row=1, col=1)
+        finally:
+            db.close()
+
+    # Налаштування осі X
     fig.update_xaxes(
         tickformat="%H:%M<br>%d/%m",
         tickangle=-45,
-        title_text="Час (Київ)"
+        title_text="Час (Київ)",
+        rangeslider_visible=False,
+        row=1, col=1
     )
+    fig.update_xaxes(tickformat="%H:%M<br>%d/%m", tickangle=-45, row=2, col=1)
+    fig.update_xaxes(tickformat="%H:%M<br>%d/%m", tickangle=-45, title_text="Час (Київ)", row=3, col=1)
+
+    # Налаштування осей Y
+    fig.update_yaxes(title_text="Ціна (USDT)", row=1, col=1)
+    fig.update_yaxes(title_text="RSI", range=[0, 100], row=2, col=1)
+    fig.update_yaxes(title_text="Volume", row=3, col=1)
 
     fig.update_layout(
-        title=f"{pair} - Свічковий графік з EMA",
-        xaxis_title="Час (Київ)",
-        yaxis_title="Ціна (USDT)",
+        title=f"{pair} - Технічний аналіз",
         template="plotly_dark",
-        height=500,
+        height=800,
+        showlegend=True,
         paper_bgcolor='rgba(0,0,0,0)',
         plot_bgcolor='rgba(26,26,46,0.5)',
-        xaxis_rangeslider_visible=False,
+        hovermode='x unified',
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1
+        ),
         hoverlabel=dict(
             bgcolor="rgba(0,0,0,0.8)",
-            font_size=11
+            font_size=12,
+            font_family="monospace"
         )
     )
 
@@ -1070,6 +1512,7 @@ async def root():
             <button class="nav-btn" data-tab="advanced">📐 Покращена аналітика</button>
             <button class="nav-btn" data-tab="settings">⚙️ Налаштування</button>
             <button class="nav-btn" data-tab="logs">📜 Логи</button>
+            <button class="nav-btn" data-tab="monitor">📊 Моніторинг</button>
         </div>
     </div>
 
@@ -1102,12 +1545,14 @@ async def root():
             <table style="width:100%; border-collapse: collapse;">
                 <thead>
                     <tr style="background: rgba(15,20,40,0.6);">
-                        <th style="padding: 12px; text-align: left; color: #667eea;">Пара</th>
-                        <th style="padding: 12px; text-align: left; color: #667eea;">Сторона</th>
-                        <th style="padding: 12px; text-align: left; color: #667eea;">Вхід</th>
-                        <th style="padding: 12px; text-align: left; color: #667eea;">Кількість</th>
-                        <th style="padding: 12px; text-align: left; color: #667eea;">TP</th>
-                        <th style="padding: 12px; text-align: left; color: #667eea;">SL</th>
+                        <th style="padding: 12px;">Пара</th>
+                        <th style="padding: 12px;">Сторона</th>
+                        <th style="padding: 12px;">Вхід</th>
+                        <th style="padding: 12px;">Кількість</th>
+                        <th style="padding: 12px;">TP</th>
+                        <th style="padding: 12px;">SL</th>
+                        <th style="padding: 12px;">Поточний PnL</th>
+                        <th style="padding: 12px;">Дії</th>
                     </tr>
                 </thead>
                 <tbody id="openTradesBody">
@@ -1193,6 +1638,27 @@ async def root():
             </div>
         </div>
         
+        <!-- Модальне вікно для графіку угоди -->
+        <div id="tradeModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.95); z-index:2000; overflow:auto;">
+            <div style="position:relative; max-width:1400px; margin:20px auto; background:#1a1a2e; border-radius:20px; padding:20px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px; flex-wrap:wrap; gap:10px;">
+                    <h3 id="tradeModalTitle">Угода / Прогноз</h3>
+                    <div style="display:flex; gap:10px; align-items:center;">
+                        <select id="tradeChartTimeframe" onchange="refreshTradeChart()" style="background:#0f0f2a; border:1px solid #667eea; border-radius:10px; padding:8px; color:white;">
+                            <option value="5m">5 хвилин</option>
+                            <option value="15m">15 хвилин</option>
+                            <option value="30m">30 хвилин</option>
+                            <option value="1h" selected>1 година</option>
+                            <option value="4h">4 години</option>
+                            <option value="1d">1 день</option>
+                        </select>
+                        <button class="btn btn-outline btn-sm" onclick="closeTradeModal()">✕ Закрити</button>
+                    </div>
+                </div>
+                <div id="tradeModalChart" style="height:600px;"></div>
+            </div>
+        </div>
+
         <style>
             #forecastModal {
                 animation: fadeIn 0.2s ease-out;
@@ -1240,13 +1706,15 @@ async def root():
 
         <!-- АНАЛІЗ -->
         <div id="tab-analysis" class="tab">
-            <div class="card"><div class="card-header"><h3>📊 Ринковий аналіз</h3><div style="display:flex;gap:10px;"><select id="analysisPair" style="background:#1a1a2e;border:1px solid #667eea;border-radius:10px;padding:8px;color:white;"><option value="BTCUSDT">BTCUSDT</option><option value="ETHUSDT">ETHUSDT</option><option value="SOLUSDT">SOLUSDT</option></select><select id="analysisTimeframe" style="background:#1a1a2e;border:1px solid #667eea;border-radius:10px;padding:8px;color:white;"><option value="1h">1 година</option><option value="4h">4 години</option><option value="1d">1 день</option></select><button class="btn btn-primary btn-sm" onclick="loadAnalysis()">Аналіз</button></div></div><div id="analysisResult" style="padding:20px;"><div style="text-align:center;color:#888;">Виберіть пару та натисніть "Аналіз"</div></div></div>
+            <div class="card"><div class="card-header"><h3>📊 Ринковий аналіз</h3><div style="display:flex;gap:10px;"><select id="analysisPair" style="background:#1a1a2e;border:1px solid #667eea;border-radius:10px;padding:8px;color:white;"><option value="BTCUSDT">BTCUSDT</option><option value="ETHUSDT">ETHUSDT</option><option value="SOLUSDT">SOLUSDT</option></select><select id="analysisTimeframe" style="background:#1a1a2e;border:1px solid #667eea;border-radius:10px;padding:8px;color:white;"><option value="15m">15 хвилин<option value="1h">1 година</option><option value="4h">4 години</option><option value="1d">1 день</option></select><button class="btn btn-primary btn-sm" onclick="loadAnalysis()">Аналіз</button></div></div><div id="analysisResult" style="padding:20px;"><div style="text-align:center;color:#888;">Виберіть пару та натисніть "Аналіз"</div></div></div>
         </div>
 
         <!-- ГРАФІКИ -->
         <div id="tab-charts" class="tab">
-            <div class="card"><div class="card-header"><h3>📊 Графік</h3><div style="display:flex;gap:10px;"><select id="chartPair" style="background:#1a1a2e;border:1px solid #667eea;border-radius:10px;padding:8px;color:white;"><option value="BTCUSDT">BTCUSDT</option><option value="ETHUSDT">ETHUSDT</option><option value="SOLUSDT">SOLUSDT</option></select><select id="chartTimeframe" style="background:#1a1a2e;border:1px solid #667eea;border-radius:10px;padding:8px;color:white;"><option value="1h">1 година</option><option value="4h">4 години</option><option value="1d">1 день</option></select><button class="btn btn-primary btn-sm" onclick="loadChart()">Оновити</button></div></div><div class="chart-container" id="priceChart"></div></div>
+            
+            <div class="card"><div class="card-header"><h3>📊 Графік</h3><div style="display:flex;gap:10px;"><select id="chartPair" style="background:#1a1a2e;border:1px solid #667eea;border-radius:10px;padding:8px;color:white;"><option value="BTCUSDT">BTCUSDT</option><option value="ETHUSDT">ETHUSDT</option><option value="SOLUSDT">SOLUSDT</option></select><select id="chartTimeframe" style="background:#1a1a2e;border:1px solid #667eea;border-radius:10px;padding:8px;color:white;"><option value="15m">15 хвилин<option value="1h">1 година</option><option value="4h">4 години</option><option value="1d">1 день</option></select><button class="btn btn-primary btn-sm" onclick="loadChart()">Оновити</button><button class="btn btn-outline btn-sm" onclick="resetChartView()">⟳ Скинути масштаб</button></div></div><div class="chart-container" id="priceChart"></div></div>
             <div class="card"><div class="card-header"><h3>📈 PnL динаміка</h3></div><div class="chart-container" id="pnlChart"></div></div>
+            
         </div>
 
         <!-- ПОКРАЩЕНА АНАЛІТИКА -->
@@ -1271,6 +1739,7 @@ async def root():
                 <div style="background:rgba(102,126,234,0.1); border-radius:10px; padding:15px; margin-bottom:20px;">
                     <small>📌 Наведіть курсор на параметр для отримання підказки</small>
                 </div>
+                
                 <h4 style="color:#667eea; margin-bottom:15px;">📊 Торгівля</h4>
                 <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:15px;margin-bottom:25px;">
                     <div class="form-group" title="Основний таймфрейм для аналізу (5m, 15m, 1h)">
@@ -1285,11 +1754,29 @@ async def root():
                         </select>
                         <small style="color:#666;">Період для розрахунку індикаторів</small>
                     </div>
+                    
+                    <div class="form-group" title="Автоматичне створення угод на основі прогнозів (для тестування)">
+                        <label>🚀 Угоди за прогнозами</label>
+                        <select id="createTradesFromForecasts">
+                            <option value="true">✅ Увімкнено</option>
+                            <option value="false">❌ Вимкнено</option>
+                        </select>
+                        <small style="color:#666;">При увімкненні, кожен прогноз створює реальну угоду</small>
+                    </div>
+                    
+                    <div class="form-group" title="Відсоток балансу для прогнозу">
+                        <label>💰 Розмір прогнозу (% балансу)</label>
+                        <input type="range" id="forecastPositionPercent" min="1" max="100" step="1" value="25" style="width:100%;">
+                        <span id="forecastPositionPercentValue" style="display:inline-block; margin-left:10px;">25%</span>
+                        <small style="color:#666;">Скільки від балансу використовувати для прогнозу</small>
+                    </div>
+                    
                     <div class="form-group" title="Як часто перевіряти нові сигнали (секунди)">
                         <label>🔄 Інтервал перевірки (сек)</label>
                         <input type="number" id="signalCheckInterval" step="5" value="30">
                         <small style="color:#666;">Рекомендовано 30-60 секунд</small>
                     </div>
+                    
                     <div class="form-group" title="Обмежити торгівлю тільки в певні години">
                         <label>⏰ Години торгівлі</label>
                         <select id="tradingHoursEnabled">
@@ -1395,330 +1882,439 @@ async def root():
             </div>
         </div>
     </div>
+    
+    <!-- МОНІТОРИНГ -->
+    <div id="tab-monitor" class="tab">
+        <div class="card">
+            <div class="card-header">
+                <h3>📊 Стан бота</h3>
+                <button class="btn btn-outline btn-sm" onclick="loadHealthCheck()">🔄 Оновити</button>
+            </div>
+            <div id="healthStatus" style="padding: 20px;">
+                <div style="text-align:center; color:#888;">Завантаження...</div>
+            </div>
+        </div>
+    </div>
 
     <div class="notification-permission" onclick="enableNotifications()">🔔 Увімкнути сповіщення</div>
 
     <script>
-        let ws = null;
-        let currentLogOffset = 0;
-        let hasMoreLogs = true;
-        let nextForecastTimer = null;
-        let notificationsEnabled = false;
+    let ws = null;
+    let currentLogOffset = 0;
+    let hasMoreLogs = true;
+    let nextForecastTimer = null;
+    let notificationsEnabled = false;
+    
+    // Модальне вікно угод
+    let currentTradeId = null;
+    let currentTradeType = null;
+    let currentTradePair = null;
 
-        function connectWebSocket() {
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
-            ws.onmessage = function(event) {
-                const data = JSON.parse(event.data);
-                if (data.type === 'status') {
-                    updateDashboard(data);
-                    if (data.next_forecast) updateNextForecastTimer(data.next_forecast);
-                }
-                if (data.type === 'notification') {
-                    showNotification(data.title, data.body);
-                }
-                if (data.type === 'new_forecast') loadForecasts();
-            };
-            ws.onclose = function() { setTimeout(connectWebSocket, 3000); };
-        }
-
-        function updateDashboard(data) {
-            const balance = document.getElementById('balance');
-            if (balance) balance.innerHTML = `$${data.balance.toFixed(2)}`;
-            const openTrades = document.getElementById('openTrades');
-            if (openTrades) openTrades.innerHTML = data.open_trades;
-            const totalPnL = document.getElementById('totalPnL');
-            if (totalPnL) totalPnL.innerHTML = data.total_pnl >= 0 ? `<span class="positive">+$${data.total_pnl.toFixed(2)}</span>` : `<span class="negative">-$${Math.abs(data.total_pnl).toFixed(2)}</span>`;
-            const winRate = document.getElementById('winRate');
-            if (winRate) winRate.innerHTML = `${data.win_rate.toFixed(1)}%`;
-            const dailyPnL = document.getElementById('dailyPnL');
-            if (dailyPnL) dailyPnL.innerHTML = data.daily_pnl >= 0 ? `<span class="positive">+$${data.daily_pnl.toFixed(2)}</span>` : `<span class="negative">-$${Math.abs(data.daily_pnl).toFixed(2)}</span>`;
-            const totalTrades = document.getElementById('totalTrades');
-            if (totalTrades) totalTrades.innerHTML = data.total_trades;
-            const profitFactor = document.getElementById('profitFactor');
-            if (profitFactor) profitFactor.innerHTML = data.profit_factor?.toFixed(2) || '0';
-            const maxDrawdown = document.getElementById('maxDrawdown');
-            if (maxDrawdown) maxDrawdown.innerHTML = `$${data.max_drawdown?.toFixed(2) || '0'}`;
-            const avgPnL = document.getElementById('avgPnL');
-            if (avgPnL) avgPnL.innerHTML = data.avg_pnl >= 0 ? `+$${data.avg_pnl?.toFixed(2)}` : `-$${Math.abs(data.avg_pnl || 0).toFixed(2)}`;
-            
-            if (data.next_forecast) updateNextForecastTimer(data.next_forecast);
-            if (data.server_time && document.getElementById('serverTime')) {
-                document.getElementById('serverTime').innerHTML = `🕐 Час сервера: ${new Date(data.server_time).toLocaleString('uk-UA')}`;
+    // ============ WEB SOCKET ============
+    function connectWebSocket() {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+        ws.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+            if (data.type === 'status') {
+                updateDashboard(data);
+                if (data.next_forecast) updateNextForecastTimer(data.next_forecast);
             }
-        }
-
-        function updateNextForecastTimer(targetTime) {
-            if (nextForecastTimer) clearInterval(nextForecastTimer);
-            function update() {
-                const now = new Date();
-                const target = new Date(targetTime);
-                const diff = target - now;
-                if (diff <= 0) {
-                    document.getElementById('nextForecastTimer').innerHTML = '00:00:00';
-                    clearInterval(nextForecastTimer);
-                    fetch('/api/status').then(r => r.json()).then(data => { if (data.next_forecast) updateNextForecastTimer(data.next_forecast); });
-                    return;
-                }
-                const hours = Math.floor(diff / 3600000);
-                const minutes = Math.floor((diff % 3600000) / 60000);
-                const seconds = Math.floor((diff % 60000) / 1000);
-                document.getElementById('nextForecastTimer').innerHTML = `${hours.toString().padStart(2,'0')}:${minutes.toString().padStart(2,'0')}:${seconds.toString().padStart(2,'0')}`;
+            if (data.type === 'notification') {
+                showNotification(data.title, data.body);
             }
-            update();
-            nextForecastTimer = setInterval(update, 1000);
-        }
+            if (data.type === 'new_forecast') loadForecasts();
+        };
+        ws.onclose = function() { setTimeout(connectWebSocket, 3000); };
+    }
 
-        async function enableNotifications() {
-            if (!('Notification' in window)) { alert('Ваш браузер не підтримує сповіщення'); return; }
-            const permission = await Notification.requestPermission();
-            if (permission === 'granted') {
-                notificationsEnabled = true;
-                document.querySelector('.notification-permission').style.display = 'none';
-                showNotification('Сповіщення увімкнено', 'Ви будете отримувати сповіщення про нові сигнали');
-            }
-        }
+    // ============ ДОПОМІЖНІ ФУНКЦІЇ ============
+    function getCurrentPrice(pair = 'BTCUSDT') {
+        return fetch(`/api/current_price/${pair}`)
+            .then(res => res.json())
+            .then(data => data.price || 40000)
+            .catch(e => 40000);
+    }
 
-        // Функції для модального вікна
-        function openForecastModal() {
-            document.getElementById('forecastModal').style.display = 'block';
-            document.body.style.overflow = 'hidden';
-        }
+    function updateDashboard(data) {
+        const balance = document.getElementById('balance');
+        if (balance) balance.innerHTML = `$${data.balance.toFixed(2)}`;
+        const openTrades = document.getElementById('openTrades');
+        if (openTrades) openTrades.innerHTML = data.open_trades;
+        const totalPnL = document.getElementById('totalPnL');
+        if (totalPnL) totalPnL.innerHTML = data.total_pnl >= 0 ? `<span class="positive">+$${data.total_pnl.toFixed(2)}</span>` : `<span class="negative">-$${Math.abs(data.total_pnl).toFixed(2)}</span>`;
+        const winRate = document.getElementById('winRate');
+        if (winRate) winRate.innerHTML = `${data.win_rate.toFixed(1)}%`;
+        const dailyPnL = document.getElementById('dailyPnL');
+        if (dailyPnL) dailyPnL.innerHTML = data.daily_pnl >= 0 ? `<span class="positive">+$${data.daily_pnl.toFixed(2)}</span>` : `<span class="negative">-$${Math.abs(data.daily_pnl).toFixed(2)}</span>`;
+        const totalTrades = document.getElementById('totalTrades');
+        if (totalTrades) totalTrades.innerHTML = data.total_trades;
+        const profitFactor = document.getElementById('profitFactor');
+        if (profitFactor) profitFactor.innerHTML = data.profit_factor?.toFixed(2) || '0';
+        const maxDrawdown = document.getElementById('maxDrawdown');
+        if (maxDrawdown) maxDrawdown.innerHTML = `$${data.max_drawdown?.toFixed(2) || '0'}`;
+        const avgPnL = document.getElementById('avgPnL');
+        if (avgPnL) avgPnL.innerHTML = data.avg_pnl >= 0 ? `+$${data.avg_pnl?.toFixed(2)}` : `-$${Math.abs(data.avg_pnl || 0).toFixed(2)}`;
         
-        function closeForecastModal() {
-            document.getElementById('forecastModal').style.display = 'none';
-            document.body.style.overflow = 'auto';
-        }
-        
-        // Закриття при натисканні Escape
-        document.addEventListener('keydown', function(e) {
-            if (e.key === 'Escape') {
-                closeForecastModal();
-            }
-        });
-        
-        async function showForecastOnChart(forecastId) {
-            console.log('Показ графіку для прогнозу:', forecastId);
-            
-            // Відкриваємо модальне вікно
-            openForecastModal();
-            document.getElementById('forecastModalTitle').innerHTML = 'Завантаження...';
-            document.getElementById('forecastModalChart').innerHTML = '<div style="text-align:center; padding:50px;">🔄 Завантаження графіку...</div>';
-            
-            try {
-                const res = await fetch(`/api/forecast/chart/${forecastId}?timeframe=1h`);
-                if (!res.ok) throw new Error('Помилка завантаження');
-                
-                const data = await res.json();
-                
-                // Отримуємо інформацію про прогноз (можна зробити окремий запит)
-                const forecastRes = await fetch(`/api/forecast/info/${forecastId}`);
-                const forecastInfo = await forecastRes.json();
-                
-                document.getElementById('forecastModalTitle').innerHTML = `${forecastInfo.pair} | ${forecastInfo.signal_type} прогноз | Вхід: $${forecastInfo.entry_price} | Ціль: $${forecastInfo.target_price}`;
-                
-                Plotly.newPlot('forecastModalChart', data.data, data.layout || {}, { responsive: true });
-                
-            } catch(e) {
-                console.error('Помилка завантаження графіку прогнозу:', e);
-                document.getElementById('forecastModalChart').innerHTML = '<div style="text-align:center; padding:50px; color:#ff4757;">❌ Помилка завантаження графіку</div>';
-            }
-        }
-
-        function showNotification(title, body) {
-            if (notificationsEnabled && Notification.permission === 'granted') {
-                new Notification(title, { body, icon: '/icon.png' });
-            }
-        }
-
-        document.querySelectorAll('.nav-btn').forEach(btn => {
-            btn.addEventListener('click', () => {
-                document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
-                btn.classList.add('active');
-                document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
-                document.getElementById(`tab-${btn.dataset.tab}`).classList.add('active');
-                if (btn.dataset.tab === 'charts') { loadChart(); loadPnlChart(); }
-                if (btn.dataset.tab === 'logs') loadLogs(true);
-                if (btn.dataset.tab === 'settings') loadSettings();
-                if (btn.dataset.tab === 'forecasts') loadForecasts();
-                if (btn.dataset.tab === 'advanced') loadAdvancedStats();
-                if (btn.dataset.tab === 'forecasts_history') loadForecastsHistory(true);
-            });
-        });
-
-        // Історія прогнозів        
-        let historyOffset = 0;
-        let hasMoreHistory = true;
-        
-        async function loadForecastsHistory(reset = true) {
-            if (reset) {
-                historyOffset = 0;
-                hasMoreHistory = true;
-                const loadMoreBtn = document.getElementById('loadMoreHistoryBtn');
-                if (loadMoreBtn) loadMoreBtn.style.display = 'none';
-            }
-            
-            try {
-                const res = await fetch(`/api/forecasts/history?limit=50&offset=${historyOffset}`);
-                const data = await res.json();
-                const body = document.getElementById('forecastsHistoryBody');
-                if (!body) return;
-                
-                if (!data.forecasts || data.forecasts.length === 0 && historyOffset === 0) {
-                    body.innerHTML = '<tr><td colspan="9" style="padding: 12px; text-align: center;">Немає прогнозів</td></tr>';
-                    return;
-                }
-                
-                const rows = data.forecasts.map(f => {
-                    let resultClass = '';
-                    if (f.result_text.includes('✅')) resultClass = 'positive';
-                    else if (f.result_text.includes('❌')) resultClass = 'negative';
-                    
-                    return `
-                        <tr style="cursor:pointer;" onclick="showForecastOnChart(${f.id})">
-                            <td style="padding: 12px; white-space: nowrap;">${new Date(f.created_at).toLocaleString()}</td>
-                            <td style="padding: 12px;">${f.pair}</td>
-                            <td style="padding: 12px;"><span class="badge ${f.signal_type === 'LONG' ? 'badge-long' : 'badge-short'}">${f.signal_type === 'LONG' ? '📈 LONG' : '📉 SHORT'}</span></td>
-                            <td style="padding: 12px;">$${f.entry_price.toFixed(0)}</td>
-                            <td style="padding: 12px;">$${f.target_price.toFixed(0)}</td>
-                            <td style="padding: 12px;">$${f.current_price.toFixed(0)}</td>
-                            <td style="padding: 12px;">${f.confidence}%</td>
-                            <td style="padding: 12px;" class="${resultClass}">${f.result_text}</td>
-                            <td style="padding: 12px;"><button class="btn btn-outline btn-sm" onclick="event.stopPropagation(); showForecastOnChart(${f.id})">📊 Графік</button></td>
-                        </tr>
-                    `;
-                }).join('');
-                
-                if (reset) {
-                    body.innerHTML = rows;
-                } else {
-                    body.innerHTML += rows;
-                }
-                
-                hasMoreHistory = data.forecasts && data.forecasts.length === 50;
-                const loadMoreBtn = document.getElementById('loadMoreHistoryBtn');
-                if (loadMoreBtn) loadMoreBtn.style.display = hasMoreHistory ? 'inline-block' : 'none';
-                historyOffset += data.forecasts?.length || 0;
-                
-            } catch(e) {
-                console.error('Помилка завантаження історії прогнозів:', e);
-                const body = document.getElementById('forecastsHistoryBody');
-                if (body) body.innerHTML = '<tr><td colspan="9" style="padding: 12px; text-align: center;">Помилка завантаження</td></tr>';
-            }
-        }
-
-        
-        async function showForecastOnChart(forecastId) {
-            console.log('Показ графіку для прогнозу:', forecastId);
-            
-            // Перемикаємо на вкладку "Графіки"
-            const chartsBtn = document.querySelector('.nav-btn[data-tab="charts"]');
-            if (chartsBtn) chartsBtn.click();
-            
-            try {
-                const res = await fetch(`/api/forecast/chart/${forecastId}?timeframe=1h`);
-                if (!res.ok) throw new Error('Помилка завантаження');
-                
-                const data = await res.json();
-                Plotly.newPlot('priceChart', data.data, data.layout || {}, { responsive: true });
-            } catch(e) {
-                console.error('Помилка завантаження графіку прогнозу:', e);
-                alert('Не вдалося завантажити графік');
-            }
-        }
-        
-        async function loadMoreHistory() {
-            if (hasMoreHistory) await loadForecastsHistory(false);
-        }
-
-        async function loadDashboard() {
-    try {
-        const res = await fetch('/api/status');
-        const data = await res.json();
-        updateDashboard(data);
         if (data.next_forecast) updateNextForecastTimer(data.next_forecast);
+        if (data.server_time && document.getElementById('serverTime')) {
+            document.getElementById('serverTime').innerHTML = `🕐 Час сервера: ${new Date(data.server_time).toLocaleString('uk-UA')}`;
+        }
+    }
 
-        // Відкриті позиції
-        const openRes = await fetch('/api/open_trades');
-        const openTrades = await openRes.json();
-        const openBody = document.getElementById('openTradesBody');
-        if (openBody) {
-            if (openTrades && openTrades.length > 0) {
-                openBody.innerHTML = openTrades.map(t => `
-                    <tr style="cursor:pointer;" onclick="showTradeOnChart(${t.id}, '${t.pair}', ${t.entry_price}, '${t.side}', null)">
-                        <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1);">${t.pair}</td>
-                        <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1);"><span class="badge ${t.side === 'BUY' ? 'badge-buy' : 'badge-sell'}">${t.side === 'BUY' ? 'LONG' : 'SHORT'}</span></td>
-                        <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1);">$${t.entry_price.toFixed(0)}</td>
-                        <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1);">${t.quantity}</td>
-                        <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1);">$${t.take_profit?.toFixed(0) || '-'}</td>
-                        <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1);">$${t.stop_loss?.toFixed(0) || '-'}</td>
-                    </tr>
-                `).join('');
-            } else {
-                openBody.innerHTML = '<tr><td colspan="6" style="padding: 12px; text-align: center;">Немає відкритих позицій</td></tr>';
+    function updateNextForecastTimer(targetTime) {
+        if (nextForecastTimer) clearInterval(nextForecastTimer);
+        function update() {
+            const now = new Date();
+            const target = new Date(targetTime);
+            const diff = target - now;
+            if (diff <= 0) {
+                document.getElementById('nextForecastTimer').innerHTML = '00:00:00';
+                clearInterval(nextForecastTimer);
+                fetch('/api/status').then(r => r.json()).then(data => { if (data.next_forecast) updateNextForecastTimer(data.next_forecast); });
+                return;
             }
+            const hours = Math.floor(diff / 3600000);
+            const minutes = Math.floor((diff % 3600000) / 60000);
+            const seconds = Math.floor((diff % 60000) / 1000);
+            document.getElementById('nextForecastTimer').innerHTML = `${hours.toString().padStart(2,'0')}:${minutes.toString().padStart(2,'0')}:${seconds.toString().padStart(2,'0')}`;
         }
+        update();
+        nextForecastTimer = setInterval(update, 1000);
+    }
 
-        // Історія угод
-        const tradesRes = await fetch('/api/trades?limit=20');
-        const trades = await tradesRes.json();
-        const tradesBody = document.getElementById('tradesBody');
-        if (tradesBody) {
-            if (trades && trades.length > 0) {
-                tradesBody.innerHTML = trades.map(t => `
-                    <tr style="cursor:pointer;" onclick="showTradeOnChart(${t.id}, '${t.pair}', ${t.entry_price}, '${t.side}', ${t.exit_price || 'null'})">
-                        <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1); white-space: nowrap;">${new Date(t.opened_at).toLocaleString()}</td>
-                        <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1);">${t.pair}</td>
-                        <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1);"><span class="badge ${t.side === 'BUY' ? 'badge-buy' : 'badge-sell'}">${t.side === 'BUY' ? 'КУПІВЛЯ' : 'ПРОДАЖ'}</span></td>
-                        <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1);">$${t.entry_price.toFixed(0)}</td>
-                        <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1);">${t.exit_price ? '$' + t.exit_price.toFixed(0) : '-'}</td>
-                        <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1);" class="${t.pnl >= 0 ? 'positive' : 'negative'}">${t.pnl >= 0 ? '+' : ''}$${t.pnl.toFixed(2)}</td>
-                    </tr>
-                `).join('');
-            } else {
-                tradesBody.innerHTML = '<tr><td colspan="6" style="padding: 12px; text-align: center;">Ще немає угод</td></tr>';
-            }
+    // ============ МОДАЛЬНІ ВІКНА ============
+    function openTradeModal() {
+        document.getElementById('tradeModal').style.display = 'block';
+        document.body.style.overflow = 'hidden';
+    }
+    
+    function closeTradeModal() {
+        document.getElementById('tradeModal').style.display = 'none';
+        document.body.style.overflow = 'auto';
+        currentTradeId = null;
+        currentTradeType = null;
+    }
+    
+    function openForecastModal() {
+        document.getElementById('forecastModal').style.display = 'block';
+        document.body.style.overflow = 'hidden';
+    }
+    
+    function closeForecastModal() {
+        document.getElementById('forecastModal').style.display = 'none';
+        document.body.style.overflow = 'auto';
+    }
+    
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') {
+            closeTradeModal();
+            closeForecastModal();
         }
-    } catch(e) { console.error(e); }
-}
+    });
 
-        function showTradeOnChart(tradeId, pair, entryPrice, side, exitPrice) {
-            document.querySelectorAll('.nav-btn').forEach(btn => {
-                if (btn.dataset.tab === 'charts') btn.click();
-            });
-            const chartPairSelect = document.getElementById('chartPair');
-            if (chartPairSelect) chartPairSelect.value = pair;
-            loadChartWithTrade(tradeId, pair, entryPrice, side, exitPrice);
+    // ============ ГРАФІКИ ============
+    async function showTradeOnChart(tradeId, pair, entryPrice, side, exitPrice) {
+        console.log('Показ графіку для угоди:', tradeId);
+        openTradeModal();
+        document.getElementById('tradeModalTitle').innerHTML = `📊 Угода ${pair} | ${side === 'BUY' ? 'LONG' : 'SHORT'} | Вхід: $${entryPrice}`;
+        document.getElementById('tradeModalChart').innerHTML = '<div style="text-align:center; padding:50px;">🔄 Завантаження графіку...</div>';
+        currentTradeId = tradeId;
+        currentTradeType = 'trade';
+        currentTradePair = pair;
+        await loadTradeChart();
+    }
+    
+    async function showForecastOnChart(forecastId) {
+        console.log('Показ графіку для прогнозу:', forecastId);
+        openTradeModal();
+        document.getElementById('tradeModalTitle').innerHTML = 'Завантаження...';
+        document.getElementById('tradeModalChart').innerHTML = '<div style="text-align:center; padding:50px;">🔄 Завантаження графіку...</div>';
+        try {
+            const forecastRes = await fetch(`/api/forecast/info/${forecastId}`);
+            const forecastInfo = await forecastRes.json();
+            currentTradeId = forecastId;
+            currentTradeType = 'forecast';
+            currentTradePair = forecastInfo.pair;
+            document.getElementById('tradeModalTitle').innerHTML = `📈 Прогноз ${forecastInfo.pair} | ${forecastInfo.signal_type} | Вхід: $${forecastInfo.entry_price} | Ціль: $${forecastInfo.target_price}`;
+            const res = await fetch(`/api/forecast/chart/${forecastId}?timeframe=${document.getElementById('tradeChartTimeframe').value}`);
+            const data = await res.json();
+            Plotly.newPlot('tradeModalChart', data.data, data.layout || {}, { responsive: true });
+        } catch(e) {
+            console.error('Помилка:', e);
+            document.getElementById('tradeModalChart').innerHTML = '<div style="text-align:center; padding:50px; color:#ff4757;">❌ Помилка завантаження</div>';
         }
-
-        async function loadChartWithTrade(tradeId, pair, entryPrice, side, exitPrice) {
-            const timeframe = document.getElementById('chartTimeframe').value;
+    }
+    
+    async function loadTradeChart() {
+        if (!currentTradeId) return;
+        const timeframe = document.getElementById('tradeChartTimeframe').value;
+        try {
+            const res = await fetch(`/api/trade/chart/${currentTradeId}?timeframe=${timeframe}`);
+            if (!res.ok) throw new Error('Помилка завантаження');
+            const data = await res.json();
+            Plotly.newPlot('tradeModalChart', data.data, data.layout || {}, { responsive: true });
+        } catch(e) {
+            console.error('Помилка завантаження графіку угоди:', e);
+            document.getElementById('tradeModalChart').innerHTML = '<div style="text-align:center; padding:50px; color:#ff4757;">❌ Помилка завантаження графіку</div>';
+        }
+    }
+    
+    async function loadForecastChart() {
+        if (!currentTradeId) return;
+        const timeframe = document.getElementById('tradeChartTimeframe').value;
+        try {
+            const res = await fetch(`/api/forecast/chart/${currentTradeId}?timeframe=${timeframe}`);
+            if (!res.ok) throw new Error('Помилка завантаження');
+            const data = await res.json();
+            Plotly.newPlot('tradeModalChart', data.data, data.layout || {}, { responsive: true });
+        } catch(e) {
+            console.error('Помилка завантаження графіку прогнозу:', e);
+            document.getElementById('tradeModalChart').innerHTML = '<div style="text-align:center; padding:50px; color:#ff4757;">❌ Помилка завантаження графіку</div>';
+        }
+    }
+    
+    async function refreshTradeChart() {
+        if (!currentTradeId) return;
+        document.getElementById('tradeModalChart').innerHTML = '<div style="text-align:center; padding:50px;">🔄 Завантаження графіку з новим таймфреймом...</div>';
+        const timeframe = document.getElementById('tradeChartTimeframe').value;
+        if (currentTradeType === 'trade') {
             try {
-                const res = await fetch(`/api/chart/${pair}?timeframe=${timeframe}`);
+                const res = await fetch(`/api/trade/chart/${currentTradeId}?timeframe=${timeframe}`);
+                if (!res.ok) throw new Error('Помилка завантаження');
                 const data = await res.json();
-                Plotly.newPlot('priceChart', data.data, data.layout || {}, { responsive: true });
-                const annotation = {
-                    text: `${side === 'BUY' ? '🟢 ВХІД' : '🔴 ВХІД'} $${entryPrice.toFixed(0)}`,
-                    x: new Date(), y: entryPrice, xref: 'x', yref: 'y', showarrow: true, arrowhead: 2, arrowsize: 1,
-                    arrowwidth: 2, arrowcolor: side === 'BUY' ? '#00ff88' : '#ff4757', ax: 0, ay: -40,
-                    bgcolor: 'rgba(0,0,0,0.7)', bordercolor: side === 'BUY' ? '#00ff88' : '#ff4757',
-                    borderwidth: 1, font: { color: 'white', size: 12 }
-                };
-                const annotations = data.layout?.annotations || [];
-                annotations.push(annotation);
-                if (exitPrice) {
-                    annotations.push({
-                        text: `🏁 ВИХІД $${exitPrice.toFixed(0)}`,
-                        x: new Date(), y: exitPrice, xref: 'x', yref: 'y', showarrow: true, arrowhead: 2,
-                        arrowsize: 1, arrowwidth: 2, arrowcolor: 'white', ax: 0, ay: 40,
-                        bgcolor: 'rgba(0,0,0,0.7)', bordercolor: 'white', font: { color: 'white', size: 12 }
-                    });
-                }
-                Plotly.update('priceChart', {}, { annotations: annotations });
-            } catch(e) { console.error(e); loadChart(); }
+                Plotly.newPlot('tradeModalChart', data.data, data.layout || {}, { responsive: true });
+            } catch(e) {
+                document.getElementById('tradeModalChart').innerHTML = '<div style="text-align:center; padding:50px; color:#ff4757;">❌ Помилка завантаження графіку</div>';
+            }
+        } else if (currentTradeType === 'forecast') {
+            try {
+                const res = await fetch(`/api/forecast/chart/${currentTradeId}?timeframe=${timeframe}`);
+                if (!res.ok) throw new Error('Помилка завантаження');
+                const data = await res.json();
+                Plotly.newPlot('tradeModalChart', data.data, data.layout || {}, { responsive: true });
+            } catch(e) {
+                document.getElementById('tradeModalChart').innerHTML = '<div style="text-align:center; padding:50px; color:#ff4757;">❌ Помилка завантаження графіку</div>';
+            }
         }
+    }
 
-        async function loadForecasts() {
+    // ============ ОСНОВНІ ФУНКЦІЇ ============
+    async function enableNotifications() {
+        if (!('Notification' in window)) { alert('Ваш браузер не підтримує сповіщення'); return; }
+        const permission = await Notification.requestPermission();
+        if (permission === 'granted') {
+            notificationsEnabled = true;
+            document.querySelector('.notification-permission').style.display = 'none';
+            showNotification('Сповіщення увімкнено', 'Ви будете отримувати сповіщення про нові сигнали');
+        }
+    }
+
+    function showNotification(title, body) {
+        if (notificationsEnabled && Notification.permission === 'granted') {
+            new Notification(title, { 
+                body,
+                icon: 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="%236667ee"%3E%3Cpath d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15h-2v-2h2v2zm0-4h-2V7h2v6z"/%3E%3C/svg%3E'
+            });
+        }
+    }
+
+    function formatServerTime(isoString) {
+        if (!isoString) return '-';
+        return isoString.substring(0, 10) + ' ' + isoString.substring(11, 16);
+    }
+
+    // ============ HISTORY FORECASTS ============
+    let historyOffset = 0;
+    let hasMoreHistory = true;
+    
+    async function loadForecastsHistory(reset = true) {
+        if (reset) { historyOffset = 0; hasMoreHistory = true; }
+        try {
+            const res = await fetch(`/api/forecasts/history?limit=50&offset=${historyOffset}`);
+            const data = await res.json();
+            const body = document.getElementById('forecastsHistoryBody');
+            if (!body) return;
+            if (!data.forecasts || data.forecasts.length === 0 && historyOffset === 0) {
+                body.innerHTML = '<tr><td colspan="9" style="padding: 12px; text-align: center;">Немає прогнозів</td></tr>';
+                return;
+            }
+            const rows = data.forecasts.map(f => {
+                let resultClass = f.result_text.includes('✅') ? 'positive' : (f.result_text.includes('❌') ? 'negative' : '');
+                const createdTime = f.created_at.substring(0, 10) + ' ' + f.created_at.substring(11, 16);
+                return `<tr style="cursor:pointer;" onclick="showForecastOnChart(${f.id})">
+                    <td style="padding: 12px; white-space: nowrap;">${createdTime}</td>
+                    <td style="padding: 12px;">${f.pair}</td>
+                    <td style="padding: 12px;"><span class="badge ${f.signal_type === 'LONG' ? 'badge-long' : 'badge-short'}">${f.signal_type === 'LONG' ? '📈 LONG' : '📉 SHORT'}</span></td>
+                    <td style="padding: 12px;">$${f.entry_price.toFixed(0)}</td>
+                    <td style="padding: 12px;">$${f.target_price.toFixed(0)}</td>
+                    <td style="padding: 12px;">$${f.current_price.toFixed(0)}</td>
+                    <td style="padding: 12px;">${f.confidence}%</td>
+                    <td style="padding: 12px;" class="${resultClass}">${f.result_text}<br><small>$${f.current_price.toFixed(0)}</small></td>
+                    <td style="padding: 12px;"><button class="btn btn-outline btn-sm" onclick="event.stopPropagation(); showForecastOnChart(${f.id})">📊 Графік</button></td>
+                </tr>`;
+            }).join('');
+            if (reset) body.innerHTML = rows;
+            else body.innerHTML += rows;
+            hasMoreHistory = data.forecasts && data.forecasts.length === 50;
+            document.getElementById('loadMoreHistoryBtn').style.display = hasMoreHistory ? 'inline-block' : 'none';
+            historyOffset += data.forecasts?.length || 0;
+        } catch(e) { console.error('Помилка завантаження історії прогнозів:', e); }
+    }
+    
+    async function loadMoreHistory() { if (hasMoreHistory) await loadForecastsHistory(false); }
+
+    // ============ HEALTH CHECK ============
+    async function loadHealthCheck() {
+        try {
+            const res = await fetch('/health');
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+            const statusColor = data.status === 'healthy' ? '#00ff88' : '#ff4757';
+            const statusText = data.status === 'healthy' ? '✅ ЗДОРОВИЙ' : '❌ ПРОБЛЕМИ';
+            let uptimeText = 'Н/Д';
+            if (data.bot && data.bot.uptime_seconds) {
+                const hours = Math.floor(data.bot.uptime_seconds / 3600);
+                const minutes = Math.floor((data.bot.uptime_seconds % 3600) / 60);
+                const seconds = data.bot.uptime_seconds % 60;
+                uptimeText = `${hours}г ${minutes}хв ${seconds}с`;
+            }
+            const balance = data.balance ? data.balance.paper_usdt : 0;
+            const wsStatus = data.websocket ? (data.websocket.status === 'connected' ? '✅ Підключено' : '❌ Відключено') : '❓ Н/Д';
+            const wsClients = data.websocket ? data.websocket.clients : 0;
+            const dbStatus = data.database ? (data.database.status === 'ok' ? '✅ Працює' : '❌ Помилка') : '❓ Н/Д';
+            const pythonVer = data.system ? data.system.python_version : 'Н/Д';
+            const platform = data.system ? data.system.platform : 'Н/Д';
+            const html = `<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:15px;">
+                <div style="background:rgba(26,26,46,0.5); border-radius:15px; padding:15px;">
+                    <h4 style="color:#667eea; margin-bottom:10px;">🤖 Статус бота</h4>
+                    <div style="font-size:24px; font-weight:700; color:${statusColor};">${statusText}</div>
+                    <div>Режим: <strong>${data.bot?.mode === 'paper' ? '📄 Paper Trading' : '💰 Real Trading'}</strong></div>
+                    <div>Версія: ${data.bot?.version || '3.0.0'}</div>
+                    <div>Час роботи: ${uptimeText}</div>
+                </div>
+                <div style="background:rgba(26,26,46,0.5); border-radius:15px; padding:15px;">
+                    <h4 style="color:#667eea; margin-bottom:10px;">🔌 Підключення</h4>
+                    <div>WebSocket: <span style="color:${data.websocket?.status === 'connected' ? '#00ff88' : '#ff4757'}">${wsStatus}</span></div>
+                    <div>Клієнтів WebSocket: ${wsClients}</div>
+                    <div>База даних: <span style="color:${data.database?.status === 'ok' ? '#00ff88' : '#ff4757'}">${dbStatus}</span></div>
+                </div>
+                <div style="background:rgba(26,26,46,0.5); border-radius:15px; padding:15px;">
+                    <h4 style="color:#667eea; margin-bottom:10px;">💰 Баланс</h4>
+                    <div style="font-size:28px; font-weight:700; color:#00d4ff;">$${balance.toFixed(2)}</div>
+                    <div>Тип: Paper Trading</div>
+                </div>
+                <div style="background:rgba(26,26,46,0.5); border-radius:15px; padding:15px;">
+                    <h4 style="color:#667eea; margin-bottom:10px;">💻 Система</h4>
+                    <div>Python: ${pythonVer}</div>
+                    <div>ОС: ${platform}</div>
+                </div>
+            </div>
+            <div style="margin-top:15px; font-size:12px; color:#666; text-align:right;">
+                Останнє оновлення: ${new Date(data.timestamp).toLocaleString('uk-UA')}
+            </div>`;
+            document.getElementById('healthStatus').innerHTML = html;
+        } catch(e) {
+            console.error('Помилка завантаження health check:', e);
+            document.getElementById('healthStatus').innerHTML = `<div style="text-align:center; padding:50px; color:#ff4757;">❌ Помилка завантаження статусу бота: ${e.message}</div>`;
+        }
+    }
+
+    // ============ DASHBOARD ============
+    async function loadDashboard() {
+        try {
+            const res = await fetch('/api/status');
+            const data = await res.json();
+            updateDashboard(data);
+            if (data.next_forecast) updateNextForecastTimer(data.next_forecast);
+
+            // Відкриті позиції
+            const openRes = await fetch('/api/open_trades');
+            const openTrades = await openRes.json();
+            const openBody = document.getElementById('openTradesBody');
+            if (openBody) {
+                if (openTrades && openTrades.length > 0) {
+                    const currentPrices = {};
+                    for (const trade of openTrades) {
+                        if (!currentPrices[trade.pair]) {
+                            const priceRes = await fetch(`/api/current_price/${trade.pair}`);
+                            const priceData = await priceRes.json();
+                            currentPrices[trade.pair] = priceData.price;
+                        }
+                    }
+                    openBody.innerHTML = openTrades.map(t => {
+                        const currentPrice = currentPrices[t.pair] || t.entry_price;
+                        let currentPnl = 0;
+                        let currentPnlPercent = 0;
+                        
+                        // Розраховуємо PnL у відсотках
+                        if (f.signal_type === 'LONG') {
+                            currentPnlPercent = ((f.current_price - f.entry_price) / f.entry_price) * 100;
+                        } else {
+                            currentPnlPercent = ((f.entry_price - f.current_price) / f.entry_price) * 100;
+                        }
+                        
+                        // Для USDT розраховуємо умовно (на основі entry_price)
+                        // Оскільки position_quantity може бути 0, використовуємо стандартний розмір
+                        const defaultQuantity = 0.01; // 0.01 BTC/ETH приблизно
+                        const quantity = f.position_quantity || defaultQuantity;
+                        
+                        if (f.signal_type === 'LONG') {
+                            currentPnl = (f.current_price - f.entry_price) * quantity;
+                        } else {
+                            currentPnl = (f.entry_price - f.current_price) * quantity;
+                        }
+                        return `<tr style="cursor:pointer;" onclick="showTradeOnChart(${t.id}, '${t.pair}', ${t.entry_price}, '${t.side}', null)">
+                            <td style="padding: 12px;">${t.pair}</td>
+                            <td style="padding: 12px;"><span class="badge ${t.side === 'BUY' ? 'badge-buy' : 'badge-sell'}">${t.side === 'BUY' ? 'LONG' : 'SHORT'}</span></td>
+                            <td style="padding: 12px;">$${t.entry_price.toFixed(0)}</td>
+                            <td style="padding: 12px;">${t.quantity}</td>
+                            <td style="padding: 12px;">$${t.take_profit?.toFixed(0) || '-'}</td>
+                            <td style="padding: 12px;">$${t.stop_loss?.toFixed(0) || '-'}</td>
+                            <td style="padding: 12px;" class="${currentPnl >= 0 ? 'positive' : 'negative'}">${currentPnl >= 0 ? '+' : ''}$${currentPnl.toFixed(2)} (${currentPnlPercent.toFixed(1)}%)</td>
+                            <td style="padding: 12px;"><button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); closeTrade(${t.id})">🔴 Закрити</button></td>
+                        </tr>`;
+                    }).join('');
+                } else {
+                    openBody.innerHTML = '<tr><td colspan="8" style="text-align: center;">Немає відкритих позицій</td></tr>';
+                }
+            }
+
+            // Історія угод
+            const tradesRes = await fetch('/api/trades?limit=20');
+            const trades = await tradesRes.json();
+            const tradesBody = document.getElementById('tradesBody');
+            if (tradesBody) {
+                if (trades && trades.length > 0) {
+                    tradesBody.innerHTML = trades.map(t => `<tr style="cursor:pointer;" onclick="showTradeOnChart(${t.id}, '${t.pair}', ${t.entry_price}, '${t.side}', ${t.exit_price || 'null'})">
+                        <td style="white-space: nowrap;">${t.opened_at.replace('T', ' ').substring(0, 16)}</td>
+                        <td>${t.pair}</td>
+                        <td><span class="badge ${t.side === 'BUY' ? 'badge-buy' : 'badge-sell'}">${t.side === 'BUY' ? 'КУПІВЛЯ' : 'ПРОДАЖ'}</span></td>
+                        <td>$${t.entry_price.toFixed(0)}</td>
+                        <td>${t.exit_price ? '$' + t.exit_price.toFixed(0) : '-'}</td>
+                        <td class="${t.pnl >= 0 ? 'positive' : 'negative'}">${t.pnl >= 0 ? '+' : ''}$${t.pnl.toFixed(2)} (${t.pnl_percent.toFixed(1)}%)</td>
+                    </tr>`).join('');
+                } else {
+                    tradesBody.innerHTML = '<td><td colspan="6" style="text-align: center;">Ще немає угод</td></tr>';
+                }
+            }
+        } catch(e) { console.error(e); }
+    }
+
+    async function closeTrade(tradeId) {
+        if (confirm(`Закрити угоду ${tradeId} за поточною ціною?`)) {
+            const currentPrice = await getCurrentPrice();
+            const res = await fetch(`/api/trade/close/${tradeId}?price=${currentPrice}`, { method: 'POST' });
+            const data = await res.json();
+            if (data.pnl !== undefined) {
+                alert(`Угоду закрито! PnL: ${data.pnl >= 0 ? '+' : ''}$${data.pnl.toFixed(2)}`);
+                loadDashboard();
+            }
+        }
+    }
+
+    // ============ FORECASTS ============
+    async function loadForecasts() {
     try {
         const res = await fetch('/api/forecasts');
         const forecasts = await res.json();
@@ -1726,146 +2322,286 @@ async def root():
         if (body) {
             if (forecasts && forecasts.length > 0) {
                 body.innerHTML = forecasts.map(f => {
-                    const profit = ((f.current_price - f.entry_price) / f.entry_price * 100 * (f.signal_type === 'LONG' ? 1 : -1)).toFixed(1);
+                    let currentPnl = 0;
+                    let currentPnlPercent = 0;
+                    
+                    if (f.signal_type === 'LONG') {
+                        currentPnlPercent = ((f.current_price - f.entry_price) / f.entry_price) * 100;
+                        // Використовуємо position_usdt для розрахунку USDT
+                        const positionUsdt = f.position_usdt || 10;
+                        currentPnl = (currentPnlPercent / 100) * positionUsdt;
+                    } else {
+                        currentPnlPercent = ((f.entry_price - f.current_price) / f.entry_price) * 100;
+                        const positionUsdt = f.position_usdt || 10;
+                        currentPnl = (currentPnlPercent / 100) * positionUsdt;
+                    }
+                    
                     const hours = Math.floor(f.time_remaining / 3600);
                     const minutes = Math.floor((f.time_remaining % 3600) / 60);
-                    return `
-                        <tr>
-                            <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1);">${f.pair}</td>
-                            <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1);"><span class="badge ${f.signal_type === 'LONG' ? 'badge-long' : 'badge-short'}">${f.signal_type === 'LONG' ? '📈 LONG' : '📉 SHORT'}</span></td>
-                            <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1);">$${f.entry_price.toFixed(0)}</td>
-                            <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1);">$${f.target_price.toFixed(0)}</td>
-                            <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1);">$${f.current_price.toFixed(0)}</td>
-                            <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1);" class="${profit >= 0 ? 'positive' : 'negative'}">${profit}%</td>
-                            <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1);">${f.confidence}%</td>
-                            <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1);" class="timer" data-expires="${f.expires_at}">${hours}г ${minutes}хв</td>
-                            <td style="padding: 12px; border-bottom: 1px solid rgba(102,126,234,0.1);"><button class="btn btn-outline btn-sm" onclick="deleteForecast(${f.id})">🗑️</button></td>
-                        </tr>
-                    `;
+                    
+                    return `<tr style="cursor:pointer;" onclick="showForecastOnChart(${f.id})">
+                        <td style="padding: 12px;">${f.pair}</td>
+                        <td style="padding: 12px;"><span class="badge ${f.signal_type === 'LONG' ? 'badge-long' : 'badge-short'}">${f.signal_type === 'LONG' ? '📈 LONG' : '📉 SHORT'}</span></td>
+                        <td style="padding: 12px;">$${f.entry_price.toFixed(0)}</td>
+                        <td style="padding: 12px;">$${f.target_price.toFixed(0)}</td>
+                        <td style="padding: 12px;">$${f.current_price.toFixed(0)}</td>
+                        <td style="padding: 12px;" class="${currentPnlPercent >= 0 ? 'positive' : 'negative'}">
+                            ${currentPnlPercent >= 0 ? '+' : ''}$${currentPnl.toFixed(2)} (${currentPnlPercent.toFixed(1)}%)
+                        </table>
+                        <td style="padding: 12px;">${f.confidence.toFixed(1)}%</td>
+                        <td style="padding: 12px;" class="timer" data-expires="${f.expires_at}">${hours}г ${minutes}хв</td>
+                        <td style="padding: 12px;"><button class="btn btn-outline btn-sm" onclick="event.stopPropagation(); deleteForecast(${f.id})">🗑️</button></td>
+                    </tr>`;
                 }).join('');
                 startTimers();
             } else {
-                body.innerHTML = '<tr><td colspan="9" style="padding: 12px; text-align: center;">Немає активних прогнозів</td></tr>';
+                body.innerHTML = '<tr><td colspan="9" style="text-align: center;">Немає активних прогнозів</td></tr>';
             }
         }
     } catch(e) { console.error(e); }
 }
 
-        function startTimers() {
-            document.querySelectorAll('.timer[data-expires]').forEach(el => {
-                if (el.hasAttribute('data-timer-set')) return;
-                el.setAttribute('data-timer-set', 'true');
-                const expires = new Date(el.dataset.expires);
-                const interval = setInterval(() => {
-                    const remaining = (expires - new Date()) / 1000;
-                    if (remaining <= 0) { clearInterval(interval); el.innerHTML = 'Завершено'; loadForecasts(); }
-                    else { const h = Math.floor(remaining / 3600); const m = Math.floor((remaining % 3600) / 60); el.innerHTML = `${h}г ${m}хв`; }
-                }, 1000);
-            });
-        }
+    function startTimers() {
+        document.querySelectorAll('.timer[data-expires]').forEach(el => {
+            if (el.hasAttribute('data-timer-set')) return;
+            el.setAttribute('data-timer-set', 'true');
+            const expires = new Date(el.dataset.expires);
+            const interval = setInterval(() => {
+                const remaining = (expires - new Date()) / 1000;
+                if (remaining <= 0) { clearInterval(interval); el.innerHTML = 'Завершено'; loadForecasts(); }
+                else { const h = Math.floor(remaining / 3600); const m = Math.floor((remaining % 3600) / 60); el.innerHTML = `${h}г ${m}хв`; }
+            }, 1000);
+        });
+    }
 
-        async function deleteForecast(id) { await fetch(`/api/forecast/${id}`, { method: 'DELETE' }); loadForecasts(); }
-        async function clearAllForecasts() { if (confirm('Очистити всі прогнози?')) { await fetch('/api/forecasts/all', { method: 'DELETE' }); loadForecasts(); } }
+    async function deleteForecast(id) { await fetch(`/api/forecast/${id}`, { method: 'DELETE' }); loadForecasts(); }
+    async function clearAllForecasts() { if (confirm('Очистити всі прогнози?')) { await fetch('/api/forecasts/all', { method: 'DELETE' }); loadForecasts(); } }
 
-        async function loadAnalysis() {
-            const pair = document.getElementById('analysisPair').value;
-            const res = await fetch(`/api/analysis/${pair}`);
+    // ============ ANALYSIS ============
+    async function loadAnalysis() {
+        const pair = document.getElementById('analysisPair').value;
+        const res = await fetch(`/api/analysis/${pair}`);
+        const data = await res.json();
+        const container = document.getElementById('analysisResult');
+        if (data.error) { container.innerHTML = `<div style="color:#ff4757;">${data.error}</div>`; return; }
+        container.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:15px;">
+            <div class="metric-card"><div class="metric-value">$${data.current_price?.toFixed(2)}</div><div class="metric-label">Ціна</div></div>
+            <div class="metric-card"><div class="metric-value" style="color:${data.trend === '📈 ВИСХІДНИЙ' ? '#00ff88' : '#ff4757'}">${data.trend}</div><div class="metric-label">Тренд (сила ${data.trend_strength}%)</div></div>
+            <div class="metric-card"><div class="metric-value" style="color:${data.rsi > 70 ? '#ff4757' : (data.rsi < 30 ? '#00ff88' : '#f39c12')}">${data.rsi}</div><div class="metric-label">RSI</div></div>
+            <div class="metric-card"><div class="metric-value" style="color:${data.macd_cross === 'bullish' ? '#00ff88' : (data.macd_cross === 'bearish' ? '#ff4757' : '#888')}">${data.macd_cross === 'bullish' ? '🟢 БИЧЯЧИЙ' : (data.macd_cross === 'bearish' ? '🔴 ВЕДМЕЖИЙ' : 'НЕЙТРАЛЬНО')}</div><div class="metric-label">MACD</div></div>
+        </div>${data.forecast ? `<div style="margin-top:20px;background:linear-gradient(135deg,rgba(102,126,234,0.2),rgba(118,75,162,0.2));border-radius:15px;padding:20px;text-align:center;"><div style="font-size:32px;font-weight:700;color:${data.forecast === 'LONG' ? '#00ff88' : '#ff4757'}">${data.forecast === 'LONG' ? '📈 LONG' : '📉 SHORT'}</div><div>Ціль: $${data.target_price?.toFixed(2)}</div><div>Впевненість: ${data.confidence}%</div></div>` : '<div style="margin-top:20px;text-align:center;color:#888;">⚠️ Немає чіткого сигналу</div>'}`;
+    }
+
+    // ============ CHARTS ============
+    let currentChartParams = { pair: 'BTCUSDT', timeframe: '1h', showTrades: true };
+    
+    async function loadChart() {
+        const pair = document.getElementById('chartPair').value;
+        const timeframe = document.getElementById('chartTimeframe').value;
+        currentChartParams = { pair, timeframe, showTrades: true };
+        try {
+            const res = await fetch(`/api/chart/${pair}?timeframe=${timeframe}&limit=300&show_trades=true`);
             const data = await res.json();
-            const container = document.getElementById('analysisResult');
-            if (data.error) { container.innerHTML = `<div style="color:#ff4757;">${data.error}</div>`; return; }
-            container.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:15px;">
-                <div class="metric-card"><div class="metric-value">$${data.current_price?.toFixed(2)}</div><div class="metric-label">Ціна</div></div>
-                <div class="metric-card"><div class="metric-value" style="color:${data.trend === '📈 ВИСХІДНИЙ' ? '#00ff88' : '#ff4757'}">${data.trend}</div><div class="metric-label">Тренд (сила ${data.trend_strength}%)</div></div>
-                <div class="metric-card"><div class="metric-value" style="color:${data.rsi > 70 ? '#ff4757' : (data.rsi < 30 ? '#00ff88' : '#f39c12')}">${data.rsi}</div><div class="metric-label">RSI</div></div>
-                <div class="metric-card"><div class="metric-value" style="color:${data.macd_cross === 'bullish' ? '#00ff88' : (data.macd_cross === 'bearish' ? '#ff4757' : '#888')}">${data.macd_cross === 'bullish' ? '🟢 БИЧЯЧИЙ' : (data.macd_cross === 'bearish' ? '🔴 ВЕДМЕЖИЙ' : 'НЕЙТРАЛЬНО')}</div><div class="metric-label">MACD</div></div>
-            </div>${data.forecast ? `<div style="margin-top:20px;background:linear-gradient(135deg,rgba(102,126,234,0.2),rgba(118,75,162,0.2));border-radius:15px;padding:20px;text-align:center;"><div style="font-size:32px;font-weight:700;color:${data.forecast === 'LONG' ? '#00ff88' : '#ff4757'}">${data.forecast === 'LONG' ? '📈 LONG' : '📉 SHORT'}</div><div>Ціль: $${data.target_price?.toFixed(2)}</div><div>Впевненість: ${data.confidence}%</div></div>` : '<div style="margin-top:20px;text-align:center;color:#888;">⚠️ Немає чіткого сигналу</div>'}`;
+            Plotly.newPlot('priceChart', data.data, data.layout || {}, { responsive: true });
+        } catch(e) {
+            console.error('Помилка завантаження графіку:', e);
+            document.getElementById('priceChart').innerHTML = '<div style="text-align:center;padding:50px;color:#888;">Помилка завантаження графіку</div>';
         }
+    }
+    
+    function resetChartView() { Plotly.relayout('priceChart', { 'xaxis.autorange': true, 'yaxis.autorange': true }); }
+    
+    async function loadPnlChart() {
+        try {
+            const res = await fetch('/api/chart/pnl');
+            const data = await res.json();
+            Plotly.newPlot('pnlChart', data.data, data.layout || {}, { responsive: true });
+        } catch(e) { document.getElementById('pnlChart').innerHTML = '<div style="padding:50px;text-align:center;">Немає даних</div>'; }
+    }
 
-        async function loadChart() {
-            const pair = document.getElementById('chartPair').value;
-            const timeframe = document.getElementById('chartTimeframe').value;
+    async function loadChartWithTrade(tradeId, pair, entryPrice, side, exitPrice) {
+        const timeframe = document.getElementById('chartTimeframe').value;
+        try {
             const res = await fetch(`/api/chart/${pair}?timeframe=${timeframe}`);
             const data = await res.json();
             Plotly.newPlot('priceChart', data.data, data.layout || {}, { responsive: true });
-        }
+            const annotation = {
+                text: `${side === 'BUY' ? '🟢 ВХІД' : '🔴 ВХІД'} $${entryPrice.toFixed(0)}`,
+                x: new Date(), y: entryPrice, xref: 'x', yref: 'y', showarrow: true, arrowhead: 2, arrowsize: 1,
+                arrowwidth: 2, arrowcolor: side === 'BUY' ? '#00ff88' : '#ff4757', ax: 0, ay: -40,
+                bgcolor: 'rgba(0,0,0,0.7)', bordercolor: side === 'BUY' ? '#00ff88' : '#ff4757',
+                borderwidth: 1, font: { color: 'white', size: 12 }
+            };
+            const annotations = data.layout?.annotations || [];
+            annotations.push(annotation);
+            if (exitPrice) {
+                annotations.push({
+                    text: `🏁 ВИХІД $${exitPrice.toFixed(0)}`,
+                    x: new Date(), y: exitPrice, xref: 'x', yref: 'y', showarrow: true, arrowhead: 2,
+                    arrowsize: 1, arrowwidth: 2, arrowcolor: 'white', ax: 0, ay: 40,
+                    bgcolor: 'rgba(0,0,0,0.7)', bordercolor: 'white', font: { color: 'white', size: 12 }
+                });
+            }
+            Plotly.update('priceChart', {}, { annotations: annotations });
+        } catch(e) { console.error(e); loadChart(); }
+    }
 
-        async function loadPnlChart() {
-            try {
-                const res = await fetch('/api/chart/pnl');
-                const data = await res.json();
-                Plotly.newPlot('pnlChart', data.data, data.layout || {}, { responsive: true });
-            } catch(e) { document.getElementById('pnlChart').innerHTML = '<div style="padding:50px;text-align:center;">Немає даних</div>'; }
-        }
+    // ============ ADVANCED STATS ============
+    async function loadAdvancedStats() {
+        try {
+            const res = await fetch('/api/stats/advanced');
+            const data = await res.json();
+            if (data.error) return;
+            document.getElementById('advWinRate').innerHTML = `${data.win_rate}%`;
+            document.getElementById('advProfitFactor').innerHTML = data.profit_factor;
+            document.getElementById('advMaxDrawdown').innerHTML = `$${data.max_drawdown}`;
+            document.getElementById('advSharpe').innerHTML = data.sharpe_ratio;
+            document.getElementById('advExpectancy').innerHTML = `$${data.expectancy}`;
+            document.getElementById('advKelly').innerHTML = `${data.kelly_criterion}%`;
+            document.getElementById('kelly').innerHTML = `${data.kelly_criterion}%`;
+        } catch(e) { console.error(e); }
+    }
 
-        async function loadAdvancedStats() {
-            try {
-                const res = await fetch('/api/stats/advanced');
-                const data = await res.json();
-                if (data.error) return;
-                document.getElementById('advWinRate').innerHTML = `${data.win_rate}%`;
-                document.getElementById('advProfitFactor').innerHTML = data.profit_factor;
-                document.getElementById('advMaxDrawdown').innerHTML = `$${data.max_drawdown}`;
-                document.getElementById('advSharpe').innerHTML = data.sharpe_ratio;
-                document.getElementById('advExpectancy').innerHTML = `$${data.expectancy}`;
-                document.getElementById('advKelly').innerHTML = `${data.kelly_criterion}%`;
-                document.getElementById('kelly').innerHTML = `${data.kelly_criterion}%`;
-            } catch(e) { console.error(e); }
-        }
-
-        async function loadSettings() {
+    // ============ SETTINGS ============
+    async function loadSettings() {
+        try {
             const res = await fetch('/api/settings');
             const s = await res.json();
-            if (document.getElementById('baseTimeframe')) document.getElementById('baseTimeframe').value = s.trading?.base_timeframe || '5m';
-            if (document.getElementById('signalCheckInterval')) document.getElementById('signalCheckInterval').value = s.trading?.signal_check_interval || 30;
-            if (document.getElementById('emaFast')) document.getElementById('emaFast').value = s.strategy?.ema_fast || 50;
-            if (document.getElementById('emaSlow')) document.getElementById('emaSlow').value = s.strategy?.ema_slow || 200;
-            if (document.getElementById('rsiPeriod')) document.getElementById('rsiPeriod').value = s.strategy?.rsi_period || 14;
-            if (document.getElementById('rsiMin')) document.getElementById('rsiMin').value = s.strategy?.rsi_min || 40;
-            if (document.getElementById('rsiMax')) document.getElementById('rsiMax').value = s.strategy?.rsi_max || 60;
-            if (document.getElementById('tpPercent')) document.getElementById('tpPercent').value = s.strategy?.take_profit_percent || 2.0;
-            if (document.getElementById('slPercent')) document.getElementById('slPercent').value = s.strategy?.stop_loss_percent || 1.5;
-            if (document.getElementById('riskPerTrade')) document.getElementById('riskPerTrade').value = s.risk?.risk_per_trade || 2.0;
-            if (document.getElementById('maxOpenTrades')) document.getElementById('maxOpenTrades').value = s.risk?.max_open_trades || 5;
-            if (document.getElementById('maxDailyLoss')) document.getElementById('maxDailyLoss').value = s.risk?.max_daily_loss || 5.0;
-            if (document.getElementById('useBollinger')) document.getElementById('useBollinger').checked = s.strategy?.use_bollinger || false;
-            if (document.getElementById('useKelly')) document.getElementById('useKelly').checked = s.risk?.use_kelly || false;
-        }
-
-        async function saveSettings() {
-            const settings = {
-                trading: { base_timeframe: document.getElementById('baseTimeframe').value, signal_check_interval: parseInt(document.getElementById('signalCheckInterval').value) },
-                strategy: { ema_fast: parseInt(document.getElementById('emaFast').value), ema_slow: parseInt(document.getElementById('emaSlow').value), rsi_period: parseInt(document.getElementById('rsiPeriod').value), rsi_min: parseInt(document.getElementById('rsiMin').value), rsi_max: parseInt(document.getElementById('rsiMax').value), take_profit_percent: parseFloat(document.getElementById('tpPercent').value), stop_loss_percent: parseFloat(document.getElementById('slPercent').value), use_bollinger: document.getElementById('useBollinger').checked },
-                risk: { risk_per_trade: parseFloat(document.getElementById('riskPerTrade').value), max_open_trades: parseInt(document.getElementById('maxOpenTrades').value), max_daily_loss: parseFloat(document.getElementById('maxDailyLoss').value), use_kelly: document.getElementById('useKelly').checked }
+            const elements = {
+                baseTimeframe: s.trading?.base_timeframe || '5m',
+                signalCheckInterval: s.trading?.signal_check_interval || 30,
+                emaFast: s.strategy?.ema_fast || 50,
+                emaSlow: s.strategy?.ema_slow || 200,
+                rsiPeriod: s.strategy?.rsi_period || 14,
+                rsiMin: s.strategy?.rsi_min || 40,
+                rsiMax: s.strategy?.rsi_max || 60,
+                tpPercent: s.strategy?.take_profit_percent || 2.0,
+                slPercent: s.strategy?.stop_loss_percent || 1.5,
+                riskPerTrade: s.risk?.risk_per_trade || 2.0,
+                maxOpenTrades: s.risk?.max_open_trades || 5,
+                maxDailyLoss: s.risk?.max_daily_loss || 5.0
             };
+            for (const [id, value] of Object.entries(elements)) {
+                const el = document.getElementById(id);
+                if (el) el.value = value;
+            }
+            const bollingerEl = document.getElementById('useBollinger');
+            if (bollingerEl) bollingerEl.checked = s.strategy?.use_bollinger || false;
+            const kellyEl = document.getElementById('useKelly');
+            if (kellyEl) kellyEl.checked = s.risk?.use_kelly || false;
+            
+            try {
+                const testingRes = await fetch('/api/settings/testing');
+                const testing = await testingRes.json();
+                const tradesSelect = document.getElementById('createTradesFromForecasts');
+                if (tradesSelect) tradesSelect.value = testing.create_trades_from_forecasts ? 'true' : 'false';
+                const percentSlider = document.getElementById('forecastPositionPercent');
+                if (percentSlider) {
+                    percentSlider.value = testing.forecast_position_percent;
+                    const percentValue = document.getElementById('forecastPositionPercentValue');
+                    if (percentValue) percentValue.innerHTML = testing.forecast_position_percent + '%';
+                }
+            } catch(e) { console.error('Помилка завантаження testing налаштувань:', e); }
+        } catch(e) { console.error('Помилка завантаження налаштувань:', e); }
+    }
+
+    async function saveSettings() {
+        const settings = {
+            trading: {
+                base_timeframe: document.getElementById('baseTimeframe').value,
+                signal_check_interval: parseInt(document.getElementById('signalCheckInterval').value)
+            },
+            strategy: {
+                ema_fast: parseInt(document.getElementById('emaFast').value),
+                ema_slow: parseInt(document.getElementById('emaSlow').value),
+                rsi_period: parseInt(document.getElementById('rsiPeriod').value),
+                rsi_min: parseInt(document.getElementById('rsiMin').value),
+                rsi_max: parseInt(document.getElementById('rsiMax').value),
+                take_profit_percent: parseFloat(document.getElementById('tpPercent').value),
+                stop_loss_percent: parseFloat(document.getElementById('slPercent').value),
+                use_bollinger: document.getElementById('useBollinger').checked
+            },
+            risk: {
+                risk_per_trade: parseFloat(document.getElementById('riskPerTrade').value),
+                max_open_trades: parseInt(document.getElementById('maxOpenTrades').value),
+                max_daily_loss: parseFloat(document.getElementById('maxDailyLoss').value),
+                use_kelly: document.getElementById('useKelly').checked
+            }
+        };
+        
+        try {
             await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settings) });
+            const createTradesSelect = document.getElementById('createTradesFromForecasts');
+            const percentSlider = document.getElementById('forecastPositionPercent');
+            if (createTradesSelect && percentSlider) {
+                await fetch('/api/settings/testing', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ create_trades_from_forecasts: createTradesSelect.value === 'true', forecast_position_percent: parseFloat(percentSlider.value) }) });
+            }
             alert('Налаштування збережено!');
+        } catch(e) { console.error('Помилка збереження:', e); alert('Помилка збереження: ' + e.message); }
+    }
+
+    // ============ LOGS ============
+    async function loadLogs(reset = true) {
+        if (reset) { currentLogOffset = 0; hasMoreLogs = true; document.getElementById('loadMoreBtn').style.display = 'none'; }
+        const level = document.getElementById('logLevelFilter')?.value || '';
+        const res = await fetch(`/api/logs?level=${level}&limit=50&offset=${currentLogOffset}`);
+        const data = await res.json();
+        const body = document.getElementById('logsBody');
+        if (!body) return;
+        if (!data.logs || data.logs.length === 0 && currentLogOffset === 0) { body.innerHTML = '<td><td colspan="4" style="text-align:center">Немає логів</td></tr>'; return; }
+        const rows = data.logs.map(l => `<tr><td style="white-space:nowrap;">${new Date(l.timestamp).toLocaleString()}</td><td class="log-${l.level.toLowerCase()}">${l.level}</td><td>${l.module || '-'}</td><td>${l.message}</td></tr>`).join('');
+        if (reset) body.innerHTML = rows; else body.innerHTML += rows;
+        hasMoreLogs = data.logs && data.logs.length === 50;
+        document.getElementById('loadMoreBtn').style.display = hasMoreLogs ? 'inline-block' : 'none';
+        currentLogOffset += data.logs?.length || 0;
+    }
+    
+    async function loadMoreLogs() { if (hasMoreLogs) await loadLogs(false); }
+    async function clearLogs() { if (confirm('Очистити логи?')) { await fetch('/api/logs', { method: 'DELETE' }); loadLogs(true); } }
+
+    // ============ НАВІГАЦІЯ ============
+    document.querySelectorAll('.nav-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+            document.getElementById(`tab-${btn.dataset.tab}`).classList.add('active');
+            if (btn.dataset.tab === 'charts') { loadChart(); loadPnlChart(); }
+            if (btn.dataset.tab === 'logs') loadLogs(true);
+            if (btn.dataset.tab === 'settings') loadSettings();
+            if (btn.dataset.tab === 'forecasts') loadForecasts();
+            if (btn.dataset.tab === 'advanced') loadAdvancedStats();
+            if (btn.dataset.tab === 'forecasts_history') loadForecastsHistory(true);
+            if (btn.dataset.tab === 'monitor') loadHealthCheck();
+        });
+    });
+
+    // ============ СЛАЙДЕР ============
+    const percentSlider = document.getElementById('forecastPositionPercent');
+    if (percentSlider) {
+        percentSlider.addEventListener('input', function() {
+            const valueSpan = document.getElementById('forecastPositionPercentValue');
+            if (valueSpan) valueSpan.innerHTML = this.value + '%';
+        });
+    }
+
+    // ============ ІНІЦІАЛІЗАЦІЯ ============
+    document.addEventListener('DOMContentLoaded', function() {
+        const timeframeSelect = document.getElementById('tradeChartTimeframe');
+        if (timeframeSelect) {
+            timeframeSelect.addEventListener('change', function() { refreshTradeChart(); });
         }
+    });
 
-        async function loadLogs(reset = true) {
-            if (reset) { currentLogOffset = 0; hasMoreLogs = true; document.getElementById('loadMoreBtn').style.display = 'none'; }
-            const level = document.getElementById('logLevelFilter')?.value || '';
-            const res = await fetch(`/api/logs?level=${level}&limit=50&offset=${currentLogOffset}`);
-            const data = await res.json();
-            const body = document.getElementById('logsBody');
-            if (!body) return;
-            if (!data.logs || data.logs.length === 0 && currentLogOffset === 0) { body.innerHTML = '<tr><td colspan="4" style="text-align:center">Немає логів</td></table>'; return; }
-            const rows = data.logs.map(l => `<tr><td style="white-space:nowrap;">${new Date(l.timestamp).toLocaleString()}</td><td><span class="log-${l.level.toLowerCase()}">${l.level}</span></td><td>${l.module || '-'}</td><td style="word-break:break-word;">${l.message}</td></tr>`).join('');
-            if (reset) body.innerHTML = rows; else body.innerHTML += rows;
-            hasMoreLogs = data.logs && data.logs.length === 50;
-            document.getElementById('loadMoreBtn').style.display = hasMoreLogs ? 'inline-block' : 'none';
-            currentLogOffset += data.logs?.length || 0;
-        }
+    connectWebSocket();
+    loadDashboard();
+    loadPnlChart();
+    loadAdvancedStats();
+    setInterval(loadDashboard, 5000);
+    setInterval(loadForecasts, 10000);
+    setInterval(() => { if (document.getElementById('tab-monitor')?.classList.contains('active')) loadHealthCheck(); }, 10000);
+</script>
 
-        async function loadMoreLogs() { if (hasMoreLogs) await loadLogs(false); }
-        async function clearLogs() { if (confirm('Очистити логи?')) { await fetch('/api/logs', { method: 'DELETE' }); loadLogs(true); } }
-
-        connectWebSocket();
-        loadDashboard();
-        loadPnlChart();
-        loadAdvancedStats();
-        setInterval(loadDashboard, 5000);
-        setInterval(loadForecasts, 10000);
-    </script>
 </body>
 </html>''')
 

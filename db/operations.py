@@ -30,6 +30,14 @@ class DatabaseOperations:
             self.db.refresh(trade)
         return trade
 
+    def get_trade_by_id(self, trade_id: int):
+        """Отримання угоди за ID"""
+        try:
+            return self.db.query(Trade).filter(Trade.id == trade_id).first()
+        except Exception as e:
+            logger.error(f"Помилка отримання угоди {trade_id}: {e}")
+            return None
+
     def get_open_trades(self, pair: Optional[str] = None, is_paper: bool = True) -> List[Trade]:
         """Отримання відкритих угод"""
         try:
@@ -65,6 +73,14 @@ class DatabaseOperations:
         except Exception as e:
             logger.error(f"Помилка отримання балансу: {e}")
             return 100.0 if is_paper else 0.0
+
+    def get_trade_by_id(self, trade_id: int) -> Optional[Trade]:
+        """Отримання угоди за ID"""
+        try:
+            return self.db.query(Trade).filter(Trade.id == trade_id).first()
+        except Exception as e:
+            logger.error(f"Помилка отримання угоди {trade_id}: {e}")
+            return None
 
     def update_balance(self, asset: str, amount: float, is_paper: bool = True):
         balance = self.db.query(Balance).filter(

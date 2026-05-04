@@ -22,6 +22,7 @@ class OrderManager:
         self.exchange = BybitClient()
         self.last_forecast_time = {}
         self.timeframes = ['1m', '5m', '15m', '1h', '4h', '1d']
+        self.start_time = datetime.now()
 
         # Ініціалізація компонентів
         self.paper_engine = PaperEngine(db_ops)
@@ -373,12 +374,29 @@ class OrderManager:
 
     def _create_auto_forecast(self, pair: str, signal_type: str, entry_price: float, target_price: float,
                               confidence: float):
-        """Автоматичне створення прогнозу"""
+        """Автоматичне створення прогнозу з розрахунком PnL"""
 
         import threading
 
-        logger.info(
-            f"🔮 [{pair}] Створення прогнозу: {signal_type} | {entry_price:.0f} → {target_price:.0f} (впевн.{confidence:.0f}%)")
+        # Отримуємо баланс та розраховуємо розмір позиції
+        balance = self.db.get_balance("USDT", is_paper=True)
+        forecast_percent = config.get('testing.forecast_position_percent', 50.0)
+        position_usdt = balance * (forecast_percent / 100)
+
+        # Перевіряємо чи вистачає балансу
+        min_trade_usdt = 10  # мінімальна сума для угоди
+        if position_usdt < min_trade_usdt:
+            logger.warning(
+                f"⚠️ [{pair}] Недостатньо балансу для прогнозу: {position_usdt:.2f} USDT (мін. {min_trade_usdt})")
+            position_usdt = min_trade_usdt if balance > min_trade_usdt else balance
+
+        position_quantity = position_usdt / entry_price
+        # Округлюємо до 3 знаків
+        position_quantity = round(position_quantity, 3)
+        position_usdt = position_quantity * entry_price
+
+        logger.info(f"🔮 [{pair}] Прогноз: {signal_type} | {entry_price:.0f} → {target_price:.0f} | "
+                    f"Розмір: {position_quantity} монет (${position_usdt:.2f})")
 
         def send_forecast():
             try:
@@ -392,11 +410,16 @@ class OrderManager:
                 async def create_forecast_internal():
                     try:
                         from web.app import create_forecast_internal as create_fc
-                        result = await create_fc(pair, signal_type, entry_price, target_price, confidence)
-                        if result:
-                            logger.info(f"✅ [{pair}] Прогноз збережено в БД")
-                        else:
-                            logger.debug(f"⚠️ [{pair}] Прогноз вже існує")
+                        result = await create_fc(
+                            pair, signal_type, entry_price, target_price, confidence,
+                            position_quantity=position_quantity, position_usdt=position_usdt
+                        )
+
+                        # Якщо увімкнено автоматичне створення угод
+                        if config.get('testing.create_trades_from_forecasts', False):
+                            logger.info(f"🚀 [{pair}] Автоматичне створення угоди за прогнозом!")
+                            self._execute_trade_sync(pair, signal_type, entry_price)
+
                     except Exception as e:
                         logger.error(f"❌ [{pair}] Помилка створення прогнозу: {e}")
 
@@ -405,10 +428,28 @@ class OrderManager:
                 else:
                     loop.run_until_complete(create_forecast_internal())
             except Exception as e:
-                logger.error(f"❌ [{pair}] Помилка в потоці прогнозу: {e}")
+                logger.error(f"❌ [{pair}] Помилка в потоці: {e}")
 
         thread = threading.Thread(target=send_forecast, daemon=True)
         thread.start()
+
+    async def close_trade_manually(self, trade_id: int, current_price: float = None):
+        """Примусове закриття угоди"""
+        trade = self.db.get_trade_by_id(trade_id)  # ← використовує новий метод
+        if not trade:
+            return {"error": "Угоду не знайдено"}
+
+        if current_price is None:
+            current_price = self.exchange.get_current_price(trade.pair)
+
+        result = self.paper_engine.execute_sell(trade.id, current_price)
+
+        if result and self.telegram:
+            await self.telegram.send_message(f"🔴 *ПРИМУСОВЕ ЗАКРИТТЯ*\n"
+                                             f"{trade.pair} | PnL: {result['pnl']:.2f} USDT",
+                                             parse_mode="Markdown")
+
+        return result
 
     def _check_exits_sync(self, pair: str):
         """Перевірка виходу для відкритих позицій"""
@@ -487,6 +528,7 @@ class OrderManager:
 
     async def run(self):
         """Головний цикл бота"""
+        self.start_time = datetime.now()  # ← ДОДАТИ
         logger.info("🔄 OrderManager основний цикл запущено")
 
         last_price_update = datetime.now()
