@@ -184,7 +184,10 @@ class BybitClient:
 
         def handle_message(message):
             try:
-                if not message or 'topic' not in message:
+                if not message or not isinstance(message, dict):
+                    return
+
+                if 'topic' not in message:
                     return
 
                 if f'kline.{ws_interval}.{symbol}' in message.get('topic', ''):
