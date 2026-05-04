@@ -68,7 +68,7 @@ class PaperEngine:
     def execute_sell(self, trade_id: int, current_price: float) -> Optional[Dict]:
         """Закриття угоди (sell)"""
 
-        trade = self.db.db.query(Trade).filter(Trade.id == trade_id).first()
+        trade = self.db.get_trade_by_id(trade_id)
         if not trade or trade.status != OrderStatus.PENDING:
             logger.error(f"Trade {trade_id} not found or already closed")
             return None
