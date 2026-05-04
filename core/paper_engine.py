@@ -19,7 +19,7 @@ class PaperEngine:
     def execute_buy(self, pair: str, quantity: float, current_price: float) -> Optional[Dict]:
         """Виконання buy ордера (paper)"""
 
-        # Перевірка балансу
+        # Отримуємо поточний баланс (вільні кошти)
         balance = self.db.get_balance("USDT", is_paper=True)
         required = quantity * current_price
 
@@ -30,14 +30,12 @@ class PaperEngine:
         # Розрахунок slippage та spread
         slippage_amount = current_price * (self.slippage / 100)
         spread_amount = current_price * (self.spread / 100)
-
-        # Фактична ціна виконання (для buy - трохи вище)
         execution_price = current_price + slippage_amount + spread_amount
 
         # Комісія
         commission_amount = required * (self.commission / 100)
 
-        # Блокуємо кошти
+        # Віднімаємо ТІЛЬКИ вартість позиції + комісію з балансу
         new_balance = balance - required - commission_amount
         self.db.update_balance("USDT", new_balance, is_paper=True)
 
@@ -55,8 +53,8 @@ class PaperEngine:
 
         trade = self.db.create_trade(trade_data)
 
-        logger.info(
-            f"[PAPER] BUY {quantity} {pair} @ {execution_price:.2f} | Commission: {commission_amount:.4f} | Balance: {new_balance:.2f}")
+        logger.info(f"[PAPER] BUY {quantity} {pair} @ {execution_price:.2f} | "
+                    f"Commission: {commission_amount:.4f} | Free Balance: {new_balance:.2f}")
 
         return {
             "trade_id": trade.id,
