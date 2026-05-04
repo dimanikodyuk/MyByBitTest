@@ -59,6 +59,7 @@ class DatabaseOperations:
     def get_balance(self, asset: str = "USDT", is_paper: bool = True) -> float:
         """Отримання балансу"""
         try:
+            # Спрощений запит без використання tuple індексації
             balance = self.db.query(Balance).filter(
                 Balance.asset == asset,
                 Balance.is_paper == int(is_paper)
@@ -70,8 +71,10 @@ class DatabaseOperations:
                 return 100.0
 
             return balance.amount if balance else 0.0
+
         except Exception as e:
             logger.error(f"Помилка отримання балансу: {e}")
+            # Повертаємо значення за замовчуванням при помилці
             return 100.0 if is_paper else 0.0
 
     def get_trade_by_id(self, trade_id: int) -> Optional[Trade]:
@@ -83,19 +86,25 @@ class DatabaseOperations:
             return None
 
     def update_balance(self, asset: str, amount: float, is_paper: bool = True):
-        balance = self.db.query(Balance).filter(
-            Balance.asset == asset,
-            Balance.is_paper == is_paper
-        ).first()
+        """Оновлення балансу"""
+        try:
+            balance = self.db.query(Balance).filter(
+                Balance.asset == asset,
+                Balance.is_paper == int(is_paper)
+            ).first()
 
-        if balance:
-            balance.amount = amount
-        else:
-            balance = Balance(asset=asset, amount=amount, is_paper=is_paper)
-            self.db.add(balance)
+            if balance:
+                balance.amount = amount
+            else:
+                balance = Balance(asset=asset, amount=amount, is_paper=int(is_paper))
+                self.db.add(balance)
 
-        self.db.commit()
-        logger.info(f"Balance updated: {asset} = {amount} (paper={is_paper})")
+            self.db.commit()
+            logger.info(f"Balance updated: {asset} = {amount} (paper={is_paper})")
+
+        except Exception as e:
+            logger.error(f"Помилка оновлення балансу: {e}")
+            self.db.rollback()
 
     def reset_paper_balance(self, initial_balance: float = 100.0):
         # Видаляємо всі paper угоди
