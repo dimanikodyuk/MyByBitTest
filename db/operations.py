@@ -57,24 +57,28 @@ class DatabaseOperations:
 
     # === BALANCE ===
     def get_balance(self, asset: str = "USDT", is_paper: bool = True) -> float:
-        """Отримання балансу"""
+        """Отримання балансу - повністю переписано"""
         try:
-            # Спрощений запит без використання tuple індексації
-            balance = self.db.query(Balance).filter(
+            # Спрощений запит
+            result = self.db.query(Balance).filter(
                 Balance.asset == asset,
-                Balance.is_paper == int(is_paper)
+                Balance.is_paper == (1 if is_paper else 0)
             ).first()
 
-            if balance is None and is_paper:
-                # Якщо балансу немає - створюємо з $100
-                self.update_balance(asset, 100.0, is_paper)
-                return 100.0
+            if result is None:
+                if is_paper:
+                    # Створюємо новий баланс
+                    new_balance = Balance(asset=asset, amount=100.0, is_paper=1)
+                    self.db.add(new_balance)
+                    self.db.commit()
+                    return 100.0
+                return 0.0
 
-            return balance.amount if balance else 0.0
+            return result.amount if result.amount is not None else 0.0
 
         except Exception as e:
             logger.error(f"Помилка отримання балансу: {e}")
-            # Повертаємо значення за замовчуванням при помилці
+            # При помилці повертаємо безпечне значення
             return 100.0 if is_paper else 0.0
 
     def get_trade_by_id(self, trade_id: int) -> Optional[Trade]:
@@ -88,19 +92,19 @@ class DatabaseOperations:
     def update_balance(self, asset: str, amount: float, is_paper: bool = True):
         """Оновлення балансу"""
         try:
-            balance = self.db.query(Balance).filter(
+            result = self.db.query(Balance).filter(
                 Balance.asset == asset,
-                Balance.is_paper == int(is_paper)
+                Balance.is_paper == (1 if is_paper else 0)
             ).first()
 
-            if balance:
-                balance.amount = amount
+            if result:
+                result.amount = amount
             else:
-                balance = Balance(asset=asset, amount=amount, is_paper=int(is_paper))
-                self.db.add(balance)
+                result = Balance(asset=asset, amount=amount, is_paper=(1 if is_paper else 0))
+                self.db.add(result)
 
             self.db.commit()
-            logger.info(f"Balance updated: {asset} = {amount} (paper={is_paper})")
+            logger.info(f"Баланс оновлено: {asset} = {amount} (paper={is_paper})")
 
         except Exception as e:
             logger.error(f"Помилка оновлення балансу: {e}")
