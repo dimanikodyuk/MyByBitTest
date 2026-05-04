@@ -2280,7 +2280,7 @@ async def root():
                     <td>$${t.entry_price.toFixed(0)}</td>
                     <td>${t.exit_price ? '$' + t.exit_price.toFixed(0) : '-'}</td>
                     <td class="${t.pnl >= 0 ? 'positive' : 'negative'}">${t.pnl >= 0 ? '+' : ''}$${t.pnl.toFixed(2)} (${t.pnl_percent.toFixed(1)}%)</td>
-                </td>`).join('');
+                </tr>`).join('');
             } else {
                 tradesBody.innerHTML = '<tr><td colspan="6" style="text-align: center;">Ще немає угод</td></tr>';
             }
@@ -2288,26 +2288,7 @@ async def root():
     } catch(e) { console.error('Помилка завантаження дашборду:', e); }
 }
 
-            // Історія угод
-            const tradesRes = await fetch('/api/trades?limit=20');
-            const trades = await tradesRes.json();
-            const tradesBody = document.getElementById('tradesBody');
-            if (tradesBody) {
-                if (trades && trades.length > 0) {
-                    tradesBody.innerHTML = trades.map(t => `<tr style="cursor:pointer;" onclick="showTradeOnChart(${t.id}, '${t.pair}', ${t.entry_price}, '${t.side}', ${t.exit_price || 'null'})">
-                        <td style="white-space: nowrap;">${t.opened_at.replace('T', ' ').substring(0, 16)}</td>
-                        <td>${t.pair}</td>
-                        <td><span class="badge ${t.side === 'BUY' ? 'badge-buy' : 'badge-sell'}">${t.side === 'BUY' ? 'КУПІВЛЯ' : 'ПРОДАЖ'}</span></td>
-                        <td>$${t.entry_price.toFixed(0)}</td>
-                        <td>${t.exit_price ? '$' + t.exit_price.toFixed(0) : '-'}</td>
-                        <td class="${t.pnl >= 0 ? 'positive' : 'negative'}">${t.pnl >= 0 ? '+' : ''}$${t.pnl.toFixed(2)} (${t.pnl_percent.toFixed(1)}%)</td>
-                    </tr>`).join('');
-                } else {
-                    tradesBody.innerHTML = '<td><td colspan="6" style="text-align: center;">Ще немає угод</td></tr>';
-                }
-            }
-        } catch(e) { console.error(e); }
-    }
+       
 
     async function closeTrade(tradeId) {
         if (confirm(`Закрити угоду ${tradeId} за поточною ціною?`)) {
