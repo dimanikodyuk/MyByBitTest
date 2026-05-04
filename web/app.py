@@ -496,6 +496,10 @@ async def get_status():
         stats = db_ops.get_stats(is_paper=True)
         balance = db_ops.get_balance("USDT", is_paper=True)
 
+        # Розрахунок заблокованої суми
+        open_trades = db_ops.get_open_trades(is_paper=True)
+        locked_amount = sum(t.entry_price * t.quantity for t in open_trades)
+
         if balance < 10:
             db_ops.reset_paper_balance(100.0)
             balance = 100.0
@@ -504,7 +508,9 @@ async def get_status():
             "status": "running" if order_manager_ref and order_manager_ref.running else "stopped",
             "mode": config.bot_mode,
             "balance": balance,
-            "open_trades": len(db_ops.get_open_trades(is_paper=True)),
+            "locked_amount": locked_amount,  # ← ДОДАНО
+            "available_balance": balance - locked_amount,  # ← ДОДАНО
+            "open_trades": len(open_trades),
             "total_trades": stats['total_trades'],
             "win_rate": stats['win_rate'],
             "total_pnl": stats['total_pnl'],
@@ -588,6 +594,27 @@ async def get_balance():
 async def get_pairs():
     return {"pairs": config.get('trading.pairs', ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'])}
 
+
+@app.get("/api/locked_amount")
+async def get_locked_amount():
+    """Отримання заблокованої суми у відкритих позиціях"""
+    db = SessionLocal()
+    db_ops = DatabaseOperations(db)
+    try:
+        open_trades = db_ops.get_open_trades(is_paper=True)
+        locked_amount = 0.0
+
+        for trade in open_trades:
+            # Сума позиції = entry_price * quantity
+            position_value = trade.entry_price * trade.quantity
+            locked_amount += position_value
+
+        return {"locked_amount": locked_amount, "open_trades_count": len(open_trades)}
+    except Exception as e:
+        logger.error(f"Помилка отримання заблокованої суми: {e}")
+        return {"locked_amount": 0, "open_trades_count": 0}
+    finally:
+        db.close()
 
 @app.get("/api/forecasts")
 async def get_forecasts():
@@ -1522,6 +1549,7 @@ async def root():
     </div>
     <div class="stats-grid">
         <div class="stat-card"><div class="stat-value" id="balance">$0</div><div class="stat-label">Баланс (USDT)</div></div>
+        <div class="stat-card"><div class="stat-value" id="lockedAmount">$0</div><div class="stat-label">🔒 Заблоковано</div></div>
         <div class="stat-card"><div class="stat-value" id="openTrades">0</div><div class="stat-label">Активні позиції</div></div>
         <div class="stat-card"><div class="stat-value" id="totalPnL">$0</div><div class="stat-label">Загальний PnL</div></div>
         <div class="stat-card"><div class="stat-value" id="winRate">0%</div><div class="stat-label">Відсоток успіху</div></div>
@@ -1936,6 +1964,18 @@ async def root():
     function updateDashboard(data) {
         const balance = document.getElementById('balance');
         if (balance) balance.innerHTML = `$${data.balance.toFixed(2)}`;
+        // Оновлюємо заблоковану суму (якщо є в data)
+        if (data.locked_amount !== undefined) {
+            const lockedElement = document.getElementById('lockedAmount');
+            if (lockedElement) lockedElement.innerHTML = `$${data.locked_amount.toFixed(2)}`;
+            
+            // Показуємо доступний баланс
+            const availableElement = document.getElementById('availableBalance');
+            if (availableElement) {
+                const available = data.balance - data.locked_amount;
+                availableElement.innerHTML = `$${available.toFixed(2)}`;
+            }
+        }
         const openTrades = document.getElementById('openTrades');
         if (openTrades) openTrades.innerHTML = data.open_trades;
         const totalPnL = document.getElementById('totalPnL');
@@ -2225,6 +2265,15 @@ async def root():
         updateDashboard(data);
         if (data.next_forecast) updateNextForecastTimer(data.next_forecast);
 
+
+        // Отримуємо заблоковану суму
+        const lockedRes = await fetch('/api/locked_amount');
+        const lockedData = await lockedRes.json();
+        const lockedElement = document.getElementById('lockedAmount');
+        if (lockedElement) {
+            lockedElement.innerHTML = `$${lockedData.locked_amount.toFixed(2)}`;
+        }
+        
         // Відкриті позиції
         const openRes = await fetch('/api/open_trades');
         const openTrades = await openRes.json();
