@@ -2222,63 +2222,74 @@ async def root():
 
     // ============ DASHBOARD ============
     async function loadDashboard() {
-        try {
-            const res = await fetch('/api/status');
-            const data = await res.json();
-            updateDashboard(data);
-            if (data.next_forecast) updateNextForecastTimer(data.next_forecast);
+    try {
+        const res = await fetch('/api/status');
+        const data = await res.json();
+        updateDashboard(data);
+        if (data.next_forecast) updateNextForecastTimer(data.next_forecast);
 
-            // Відкриті позиції
-            const openRes = await fetch('/api/open_trades');
-            const openTrades = await openRes.json();
-            const openBody = document.getElementById('openTradesBody');
-            if (openBody) {
-                if (openTrades && openTrades.length > 0) {
-                    const currentPrices = {};
-                    for (const trade of openTrades) {
-                        if (!currentPrices[trade.pair]) {
-                            const priceRes = await fetch(`/api/current_price/${trade.pair}`);
-                            const priceData = await priceRes.json();
-                            currentPrices[trade.pair] = priceData.price;
-                        }
+        // Відкриті позиції
+        const openRes = await fetch('/api/open_trades');
+        const openTrades = await openRes.json();
+        const openBody = document.getElementById('openTradesBody');
+        if (openBody) {
+            if (openTrades && openTrades.length > 0) {
+                // Отримуємо поточні ціни
+                const currentPrices = {};
+                for (const trade of openTrades) {
+                    if (!currentPrices[trade.pair]) {
+                        const priceRes = await fetch(`/api/current_price/${trade.pair}`);
+                        const priceData = await priceRes.json();
+                        currentPrices[trade.pair] = priceData.price;
                     }
-                    openBody.innerHTML = openTrades.map(t => {
-                        const currentPrice = currentPrices[t.pair] || t.entry_price;
-                        let currentPnl = 0;
-                        let currentPnlPercent = 0;
-                        
-                        // Розраховуємо PnL у відсотках
-                        if (f.signal_type === 'LONG') {
-                            currentPnlPercent = ((f.current_price - f.entry_price) / f.entry_price) * 100;
-                        } else {
-                            currentPnlPercent = ((f.entry_price - f.current_price) / f.entry_price) * 100;
-                        }
-                        
-                        // Для USDT розраховуємо умовно (на основі entry_price)
-                        // Оскільки position_quantity може бути 0, використовуємо стандартний розмір
-                        const defaultQuantity = 0.01; // 0.01 BTC/ETH приблизно
-                        const quantity = f.position_quantity || defaultQuantity;
-                        
-                        if (f.signal_type === 'LONG') {
-                            currentPnl = (f.current_price - f.entry_price) * quantity;
-                        } else {
-                            currentPnl = (f.entry_price - f.current_price) * quantity;
-                        }
-                        return `<tr style="cursor:pointer;" onclick="showTradeOnChart(${t.id}, '${t.pair}', ${t.entry_price}, '${t.side}', null)">
-                            <td style="padding: 12px;">${t.pair}</td>
-                            <td style="padding: 12px;"><span class="badge ${t.side === 'BUY' ? 'badge-buy' : 'badge-sell'}">${t.side === 'BUY' ? 'LONG' : 'SHORT'}</span></td>
-                            <td style="padding: 12px;">$${t.entry_price.toFixed(0)}</td>
-                            <td style="padding: 12px;">${t.quantity}</td>
-                            <td style="padding: 12px;">$${t.take_profit?.toFixed(0) || '-'}</td>
-                            <td style="padding: 12px;">$${t.stop_loss?.toFixed(0) || '-'}</td>
-                            <td style="padding: 12px;" class="${currentPnl >= 0 ? 'positive' : 'negative'}">${currentPnl >= 0 ? '+' : ''}$${currentPnl.toFixed(2)} (${currentPnlPercent.toFixed(1)}%)</td>
-                            <td style="padding: 12px;"><button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); closeTrade(${t.id})">🔴 Закрити</button></td>
-                        </tr>`;
-                    }).join('');
-                } else {
-                    openBody.innerHTML = '<tr><td colspan="8" style="text-align: center;">Немає відкритих позицій</td></tr>';
                 }
+                
+                openBody.innerHTML = openTrades.map(t => {
+                    const currentPrice = currentPrices[t.pair] || t.entry_price;
+                    let currentPnl = 0, currentPnlPercent = 0;
+                    if (t.side === 'BUY') {
+                        currentPnl = (currentPrice - t.entry_price) * t.quantity;
+                        currentPnlPercent = ((currentPrice - t.entry_price) / t.entry_price) * 100;
+                    } else {
+                        currentPnl = (t.entry_price - currentPrice) * t.quantity;
+                        currentPnlPercent = ((t.entry_price - currentPrice) / t.entry_price) * 100;
+                    }
+                    return `<tr style="cursor:pointer;" onclick="showTradeOnChart(${t.id}, '${t.pair}', ${t.entry_price}, '${t.side}', null)">
+                        <td style="padding: 12px;">${t.pair}</td>
+                        <td style="padding: 12px;"><span class="badge ${t.side === 'BUY' ? 'badge-buy' : 'badge-sell'}">${t.side === 'BUY' ? 'LONG' : 'SHORT'}</span></td>
+                        <td style="padding: 12px;">$${t.entry_price.toFixed(0)}</td>
+                        <td style="padding: 12px;">${t.quantity}</td>
+                        <td style="padding: 12px;">$${t.take_profit?.toFixed(0) || '-'}</td>
+                        <td style="padding: 12px;">$${t.stop_loss?.toFixed(0) || '-'}</td>
+                        <td style="padding: 12px;" class="${currentPnl >= 0 ? 'positive' : 'negative'}">${currentPnl >= 0 ? '+' : ''}$${currentPnl.toFixed(2)} (${currentPnlPercent.toFixed(1)}%)</td>
+                        <td style="padding: 12px;"><button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); closeTrade(${t.id})">🔴 Закрити</button></td>
+                    </tr>`;
+                }).join('');
+            } else {
+                openBody.innerHTML = '<tr><td colspan="8" style="text-align: center;">Немає відкритих позицій</td></tr>';
             }
+        }
+
+        // Історія угод
+        const tradesRes = await fetch('/api/trades?limit=20');
+        const trades = await tradesRes.json();
+        const tradesBody = document.getElementById('tradesBody');
+        if (tradesBody) {
+            if (trades && trades.length > 0) {
+                tradesBody.innerHTML = trades.map(t => `<tr style="cursor:pointer;" onclick="showTradeOnChart(${t.id}, '${t.pair}', ${t.entry_price}, '${t.side}', ${t.exit_price || 'null'})">
+                    <td style="white-space: nowrap;">${t.opened_at.replace('T', ' ').substring(0, 16)}</td>
+                    <td>${t.pair}</td>
+                    <td><span class="badge ${t.side === 'BUY' ? 'badge-buy' : 'badge-sell'}">${t.side === 'BUY' ? 'КУПІВЛЯ' : 'ПРОДАЖ'}</span></td>
+                    <td>$${t.entry_price.toFixed(0)}</td>
+                    <td>${t.exit_price ? '$' + t.exit_price.toFixed(0) : '-'}</td>
+                    <td class="${t.pnl >= 0 ? 'positive' : 'negative'}">${t.pnl >= 0 ? '+' : ''}$${t.pnl.toFixed(2)} (${t.pnl_percent.toFixed(1)}%)</td>
+                </td>`).join('');
+            } else {
+                tradesBody.innerHTML = '<tr><td colspan="6" style="text-align: center;">Ще немає угод</td></tr>';
+            }
+        }
+    } catch(e) { console.error('Помилка завантаження дашборду:', e); }
+}
 
             // Історія угод
             const tradesRes = await fetch('/api/trades?limit=20');
