@@ -411,7 +411,7 @@ async def get_forecast_info(forecast_id: str):
 
 @app.get("/api/forecast/chart/{forecast_id}")
 async def get_forecast_chart(forecast_id: str, timeframe: str = "1h"):
-    """Отримання графіку для конкретного прогнозу"""
+    """Отримання графіку для конкретного прогнозу - виправлено час"""
     from exchange.bybit_client import BybitClient
     import pandas_ta as ta
     import traceback
@@ -423,7 +423,7 @@ async def get_forecast_chart(forecast_id: str, timeframe: str = "1h"):
         if not forecast:
             raise HTTPException(status_code=404, detail="Прогноз не знайдено")
 
-        logger.info(f"Створення графіку для прогнозу {forecast_id}: {forecast.pair} {forecast.signal_type}")
+        logger.info(f"Створення графіку для прогнозу {forecast_id}")
 
         exchange = BybitClient()
 
@@ -431,19 +431,24 @@ async def get_forecast_chart(forecast_id: str, timeframe: str = "1h"):
         df = exchange.get_klines(forecast.pair, timeframe, limit=200)
 
         if df is None or df.empty:
-            logger.error(f"Немає даних для {forecast.pair}")
             fig = go.Figure()
             fig.update_layout(title=f"Немає даних для {forecast.pair}", template="plotly_dark", height=550)
             return JSONResponse(content=json.loads(json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)))
 
-        # Конвертуємо timestamp в datetime
+        # Конвертуємо timestamp з UTC в локальний час Києва
         df['timestamp'] = pd.to_datetime(df['timestamp'])
+        # ByBit повертає UTC, конвертуємо в Kyiv
+        df['timestamp'] = df['timestamp'].dt.tz_localize('UTC').dt.tz_convert(KYIV_TZ)
 
-        # Конвертуємо forecast.created_at в pandas Timestamp
-        created_at_ts = pd.Timestamp(forecast.created_at)
+        # Конвертуємо forecast.created_at (вже в Kyiv)
+        entry_time = pd.Timestamp(forecast.created_at).tz_localize(KYIV_TZ)
+
+        # Визначаємо діапазон для відображення
+        min_time = entry_time - pd.Timedelta(hours=12)
+        max_time = df['timestamp'].max()
 
         # Фільтруємо дані
-        df_filtered = df[df['timestamp'] >= created_at_ts - pd.Timedelta(hours=24)]
+        df_filtered = df[(df['timestamp'] >= min_time) & (df['timestamp'] <= max_time)]
 
         if df_filtered.empty:
             df_filtered = df.tail(100)
@@ -455,7 +460,7 @@ async def get_forecast_chart(forecast_id: str, timeframe: str = "1h"):
 
         fig = go.Figure()
 
-        # Свічковий графік
+        # Свічковий графік з форматуванням часу
         fig.add_trace(go.Candlestick(
             x=df_filtered['timestamp'],
             open=df_filtered['open'],
@@ -480,8 +485,7 @@ async def get_forecast_chart(forecast_id: str, timeframe: str = "1h"):
             name='EMA 200', line=dict(color='#ff4757', width=1.5)
         ))
 
-        # Точка входу (конвертуємо created_at в правильний формат)
-        entry_time = pd.Timestamp(forecast.created_at)
+        # Точка входу
         entry_color = '#00ff88' if forecast.signal_type == 'LONG' else '#ff4757'
         entry_symbol = 'triangle-up' if forecast.signal_type == 'LONG' else 'triangle-down'
 
@@ -506,13 +510,23 @@ async def get_forecast_chart(forecast_id: str, timeframe: str = "1h"):
         current_price = df_filtered['close'].iloc[-1]
         current_time = df_filtered['timestamp'].iloc[-1]
 
+        # Додаємо лінію від входу до поточної ціни
+        if current_time > entry_time:
+            fig.add_trace(go.Scatter(
+                x=[entry_time, current_time],
+                y=[forecast.entry_price, current_price],
+                mode='lines',
+                name='Траєкторія',
+                line=dict(color='#00d4ff', width=2, dash='dash')
+            ))
+
         fig.add_trace(go.Scatter(
             x=[current_time],
             y=[current_price],
             mode='markers',
             name='Поточна ціна',
             marker=dict(size=14, color='white', symbol='circle', line=dict(width=2, color='#00d4ff')),
-            text=[f"<b>ПОТОЧНА ЦІНА</b><br>${current_price:.0f}"],
+            text=[f"<b>ПОТОЧНА ЦІНА</b><br>${current_price:.0f}<br>{current_time.strftime('%Y-%m-%d %H:%M')}"],
             hoverinfo='text',
             hovertemplate='%{text}<extra></extra>'
         ))
@@ -524,19 +538,32 @@ async def get_forecast_chart(forecast_id: str, timeframe: str = "1h"):
             line_color="#00ff88",
             annotation_text=f"🎯 Ціль: ${forecast.target_price:.0f}",
             annotation_font_size=11,
-            annotation_font_color="#00ff88"
+            annotation_font_color="#00ff88",
+            annotation_x=0.02
+        )
+
+        # Налаштування осі X для правильного відображення часу
+        fig.update_xaxes(
+            tickformat="%H:%M<br>%d/%m",
+            tickangle=-45,
+            title_text="Час (Київ)"
         )
 
         fig.update_layout(
             title=f"{forecast.pair} - Прогноз {forecast.signal_type}",
-            xaxis_title="Час",
+            xaxis_title="Час (Київ)",
             yaxis_title="Ціна (USDT)",
             template="plotly_dark",
             height=550,
             paper_bgcolor='rgba(0,0,0,0)',
             plot_bgcolor='rgba(26,26,46,0.5)',
             xaxis_rangeslider_visible=False,
-            hovermode='closest'
+            hovermode='closest',
+            hoverlabel=dict(
+                bgcolor="rgba(0,0,0,0.8)",
+                font_size=12,
+                font_family="monospace"
+            )
         )
 
         return JSONResponse(content=json.loads(json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)))
@@ -544,9 +571,8 @@ async def get_forecast_chart(forecast_id: str, timeframe: str = "1h"):
     except Exception as e:
         logger.error(f"Помилка створення графіку прогнозу: {e}")
         logger.error(traceback.format_exc())
-        # Повертаємо порожній графік замість помилки
         fig = go.Figure()
-        fig.update_layout(title=f"Помилка завантаження даних: {str(e)[:100]}", template="plotly_dark", height=550)
+        fig.update_layout(title=f"Помилка: {str(e)[:100]}", template="plotly_dark", height=550)
         return JSONResponse(content=json.loads(json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)))
     finally:
         db.close()
@@ -646,6 +672,10 @@ async def get_chart(pair: str, timeframe: str = "1h", limit: int = 200):
     if df is None or df.empty:
         raise HTTPException(status_code=404, detail="Дані не знайдено")
 
+    # Конвертуємо час з UTC в Kyiv
+    df['timestamp'] = pd.to_datetime(df['timestamp'])
+    df['timestamp'] = df['timestamp'].dt.tz_localize('UTC').dt.tz_convert(KYIV_TZ)
+
     df['EMA_20'] = ta.ema(df['close'], length=20)
     df['EMA_50'] = ta.ema(df['close'], length=50)
     df['EMA_200'] = ta.ema(df['close'], length=200)
@@ -675,19 +705,28 @@ async def get_chart(pair: str, timeframe: str = "1h", limit: int = 200):
         name='EMA 200', line=dict(color='#ff4757', width=1.5)
     ))
 
+    fig.update_xaxes(
+        tickformat="%H:%M<br>%d/%m",
+        tickangle=-45,
+        title_text="Час (Київ)"
+    )
+
     fig.update_layout(
         title=f"{pair} - Свічковий графік з EMA",
-        xaxis_title="Час",
+        xaxis_title="Час (Київ)",
         yaxis_title="Ціна (USDT)",
         template="plotly_dark",
         height=500,
         paper_bgcolor='rgba(0,0,0,0)',
         plot_bgcolor='rgba(26,26,46,0.5)',
-        xaxis_rangeslider_visible=False
+        xaxis_rangeslider_visible=False,
+        hoverlabel=dict(
+            bgcolor="rgba(0,0,0,0.8)",
+            font_size=11
+        )
     )
 
     return JSONResponse(content=json.loads(json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)))
-
 
 @app.get("/api/analysis/{pair}")
 async def get_market_analysis(pair: str):
