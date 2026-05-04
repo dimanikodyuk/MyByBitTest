@@ -57,24 +57,29 @@ class DatabaseOperations:
 
     # === BALANCE ===
     def get_balance(self, asset: str = "USDT", is_paper: bool = True) -> float:
-        """Отримання балансу - повністю переписано"""
+        """Отримання балансу - через прямий SQL"""
         try:
-            # Спрощений запит
-            result = self.db.query(Balance).filter(
-                Balance.asset == asset,
-                Balance.is_paper == (1 if is_paper else 0)
-            ).first()
+            from sqlalchemy import text
+            paper_int = 1 if is_paper else 0
+
+            # Прямий SQL запит замість ORM
+            result = self.db.execute(
+                text("SELECT amount FROM balances WHERE asset = :asset AND is_paper = :paper"),
+                {"asset": asset, "paper": paper_int}
+            ).fetchone()
 
             if result is None:
                 if is_paper:
-                    # Створюємо новий баланс
-                    new_balance = Balance(asset=asset, amount=100.0, is_paper=1)
-                    self.db.add(new_balance)
+                    # Створюємо запис через прямий SQL
+                    self.db.execute(
+                        text("INSERT INTO balances (asset, amount, is_paper) VALUES (:asset, :amount, :paper)"),
+                        {"asset": asset, "amount": 100.0, "paper": paper_int}
+                    )
                     self.db.commit()
                     return 100.0
                 return 0.0
 
-            return result.amount if result.amount is not None else 0.0
+            return float(result[0])
 
         except Exception as e:
             logger.error(f"Помилка отримання балансу: {e}")
@@ -90,18 +95,30 @@ class DatabaseOperations:
             return None
 
     def update_balance(self, asset: str, amount: float, is_paper: bool = True):
-        """Оновлення балансу"""
+        """Оновлення балансу - через прямий SQL"""
         try:
-            result = self.db.query(Balance).filter(
-                Balance.asset == asset,
-                Balance.is_paper == (1 if is_paper else 0)
-            ).first()
+            from sqlalchemy import text
+            paper_int = 1 if is_paper else 0
+
+            # Перевіряємо чи існує запис
+            result = self.db.execute(
+                text("SELECT id FROM balances WHERE asset = :asset AND is_paper = :paper"),
+                {"asset": asset, "paper": paper_int}
+            ).fetchone()
 
             if result:
-                result.amount = amount
+                # Оновлюємо існуючий
+                self.db.execute(
+                    text(
+                        "UPDATE balances SET amount = :amount, updated_at = CURRENT_TIMESTAMP WHERE asset = :asset AND is_paper = :paper"),
+                    {"amount": amount, "asset": asset, "paper": paper_int}
+                )
             else:
-                result = Balance(asset=asset, amount=amount, is_paper=(1 if is_paper else 0))
-                self.db.add(result)
+                # Створюємо новий
+                self.db.execute(
+                    text("INSERT INTO balances (asset, amount, is_paper) VALUES (:asset, :amount, :paper)"),
+                    {"asset": asset, "amount": amount, "paper": paper_int}
+                )
 
             self.db.commit()
             logger.info(f"Баланс оновлено: {asset} = {amount} (paper={is_paper})")
@@ -111,16 +128,27 @@ class DatabaseOperations:
             self.db.rollback()
 
     def reset_paper_balance(self, initial_balance: float = 100.0):
-        # Видаляємо всі paper угоди
-        self.db.query(Trade).filter(Trade.is_paper == 1).delete()
-        self.db.query(Order).filter(Order.is_paper == 1).delete()
+        """Скидання paper балансу - через прямий SQL"""
+        try:
+            from sqlalchemy import text
 
-        # Оновлюємо баланс
-        self.db.query(Balance).filter(Balance.is_paper == 1).delete()
-        self.db.add(Balance(asset="USDT", amount=initial_balance, is_paper=1))
+            # Видаляємо всі paper угоди
+            self.db.execute(text("DELETE FROM trades WHERE is_paper = 1"))
+            self.db.execute(text("DELETE FROM orders WHERE is_paper = 1"))
 
-        self.db.commit()
-        logger.info(f"Paper balance reset to {initial_balance} USDT")
+            # Оновлюємо баланс
+            self.db.execute(text("DELETE FROM balances WHERE is_paper = 1"))
+            self.db.execute(
+                text("INSERT INTO balances (asset, amount, is_paper) VALUES (:asset, :amount, :paper)"),
+                {"asset": "USDT", "amount": initial_balance, "paper": 1}
+            )
+
+            self.db.commit()
+            logger.info(f"Paper balance reset to {initial_balance} USDT")
+
+        except Exception as e:
+            logger.error(f"Помилка скидання балансу: {e}")
+            self.db.rollback()
 
     # === SIGNALS ===
     def save_signal(self, pair: str, signal: SignalType, price: float,
