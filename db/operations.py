@@ -57,36 +57,34 @@ class DatabaseOperations:
 
     # === BALANCE ===
     def get_balance(self, asset: str = "USDT", is_paper: bool = True) -> float:
-        """Отримання балансу - максимально спрощено"""
+        """Отримання балансу - через чистий SQLite"""
         try:
             paper_val = 1 if is_paper else 0
 
-            # Простий запит через filter
-            balance_obj = self.db.query(Balance).filter(
-                Balance.asset == asset,
-                Balance.is_paper == paper_val
-            ).first()
+            # Отримуємо сире з'єднання SQLite
+            connection = self.db.connection()
+            cursor = connection.cursor()
 
-            if balance_obj is None:
+            cursor.execute(
+                "SELECT amount FROM balances WHERE asset = ? AND is_paper = ?",
+                (asset, paper_val)
+            )
+            result = cursor.fetchone()
+
+            if result is None:
                 if is_paper:
-                    # Створюємо новий баланс
-                    new_balance = Balance()
-                    new_balance.asset = asset
-                    new_balance.amount = 100.0
-                    new_balance.is_paper = paper_val
-                    self.db.add(new_balance)
-                    self.db.commit()
+                    cursor.execute(
+                        "INSERT INTO balances (asset, amount, is_paper) VALUES (?, ?, ?)",
+                        (asset, 100.0, paper_val)
+                    )
+                    connection.commit()
                     return 100.0
                 return 0.0
 
-            # Перевіряємо чи є значення
-            if balance_obj.amount is None:
-                return 0.0
-            return float(balance_obj.amount)
+            return float(result[0])
 
         except Exception as e:
             logger.error(f"Помилка отримання балансу: {e}")
-            # Безпечне значення при помилці
             return 100.0 if is_paper else 0.0
 
     def get_trade_by_id(self, trade_id: int) -> Optional[Trade]:
