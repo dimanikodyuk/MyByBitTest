@@ -138,10 +138,10 @@ class ForecastDB(Base):
     result = Column(String(50), nullable=True)
 
     # Додаткові поля для PnL
-    position_quantity = Column(Float, default=0.0)  # Кількість монет
-    position_usdt = Column(Float, default=0.0)  # Розмір позиції в USDT
-    current_pnl = Column(Float, default=0.0)  # Поточний PnL
-    closed_pnl = Column(Float, default=0.0)  # Фінальний PnL
+    position_quantity = Column(Float, default=0.0)
+    position_usdt = Column(Float, default=0.0)
+    current_pnl = Column(Float, default=0.0)
+    closed_pnl = Column(Float, default=0.0)
 
     __table_args__ = (
         Index('idx_forecasts_pair_status', 'pair', 'status'),
