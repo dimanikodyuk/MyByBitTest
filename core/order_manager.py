@@ -417,8 +417,9 @@ class OrderManager:
 
                         # Якщо увімкнено автоматичне створення угод
                         if config.get('testing.create_trades_from_forecasts', False):
-                            logger.info(f"🚀 [{pair}] Автоматичне створення угоди за прогнозом!")
-                            self._execute_trade_sync(pair, signal_type, entry_price)
+                            logger.info(
+                                f"🚀 [{pair}] Автоматичне створення угоди за прогнозом (розмір: {position_quantity})!")
+                            self._execute_trade_sync(pair, signal_type, entry_price, position_quantity)  # передаємо quantity
 
                     except Exception as e:
                         logger.error(f"❌ [{pair}] Помилка створення прогнозу: {e}")
@@ -432,6 +433,41 @@ class OrderManager:
 
         thread = threading.Thread(target=send_forecast, daemon=True)
         thread.start()
+
+    def _execute_trade_sync_with_size(self, pair: str, signal_type: str, current_price: float, quantity: float):
+        """Виконання угоди з фіксованою кількістю (для прогнозів)"""
+
+        balance = self.db.get_balance("USDT", is_paper=True)
+        tp_percent = config.get('strategy.take_profit_percent', 2.0)
+        sl_percent = config.get('strategy.stop_loss_percent', 1.5)
+
+        if signal_type == "LONG":
+            tp_price = current_price * (1 + tp_percent / 100)
+            sl_price = current_price * (1 - sl_percent / 100)
+
+            result = self.paper_engine.execute_buy(pair, quantity, current_price)
+
+            if result:
+                self.db.update_trade(result['trade_id'], {
+                    'take_profit': tp_price,
+                    'stop_loss': sl_price
+                })
+
+                logger.info(f"✅ [{pair}] LONG угода відкрита: {quantity} @ {result['execution_price']:.2f}")
+
+        elif signal_type == "SHORT":
+            tp_price = current_price * (1 - tp_percent / 100)
+            sl_price = current_price * (1 + sl_percent / 100)
+
+            result = self.paper_engine.execute_short(pair, quantity, current_price)
+
+            if result:
+                self.db.update_trade(result['trade_id'], {
+                    'take_profit': tp_price,
+                    'stop_loss': sl_price
+                })
+
+                logger.info(f"✅ [{pair}] SHORT угода відкрита: {quantity} @ {result['execution_price']:.2f}")
 
     async def close_trade_manually(self, trade_id: int, current_price: float = None):
         """Примусове закриття угоди"""
