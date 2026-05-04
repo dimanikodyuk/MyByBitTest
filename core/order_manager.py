@@ -419,7 +419,7 @@ class OrderManager:
                         if config.get('testing.create_trades_from_forecasts', False):
                             logger.info(
                                 f"🚀 [{pair}] Автоматичне створення угоди за прогнозом (розмір: {position_quantity})!")
-                            self._execute_trade_sync(pair, signal_type, entry_price, position_quantity)  # передаємо quantity
+                            self._execute_trade_sync_with_size(pair, signal_type, entry_price, position_quantity)
 
                     except Exception as e:
                         logger.error(f"❌ [{pair}] Помилка створення прогнозу: {e}")

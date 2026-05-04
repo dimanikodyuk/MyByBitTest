@@ -11,6 +11,33 @@ class DatabaseOperations:
 
     def __init__(self, db_session: Session):
         self.db = db_session
+        self._balance_cache = {}  # Кеш балансу
+        self._balance_cache_time = {}  # Час кешу
+
+    def _get_cached_balance(self, asset: str, is_paper: bool) -> Optional[float]:
+        """Отримання балансу з кешу"""
+        key = f"{asset}_{is_paper}"
+        if key in self._balance_cache:
+            # Кеш діє 5 секунд
+            if (datetime.now() - self._balance_cache_time.get(key, datetime.min)).seconds < 5:
+                return self._balance_cache[key]
+        return None
+
+    def _set_cached_balance(self, asset: str, is_paper: bool, amount: float):
+        """Збереження балансу в кеш"""
+        key = f"{asset}_{is_paper}"
+        self._balance_cache[key] = amount
+        self._balance_cache_time[key] = datetime.now()
+
+    def _clear_balance_cache(self, asset: str = None, is_paper: bool = None):
+        """Очищення кешу балансу"""
+        if asset and is_paper is not None:
+            key = f"{asset}_{is_paper}"
+            self._balance_cache.pop(key, None)
+            self._balance_cache_time.pop(key, None)
+        else:
+            self._balance_cache.clear()
+            self._balance_cache_time.clear()
 
     # === TRADES ===
     def create_trade(self, trade_data: dict) -> Trade:
@@ -31,7 +58,6 @@ class DatabaseOperations:
         return trade
 
     def get_open_trades(self, pair: Optional[str] = None, is_paper: bool = True) -> List[Trade]:
-        """Отримання відкритих угод"""
         try:
             query = self.db.query(Trade).filter(
                 Trade.status == OrderStatus.PENDING,
@@ -45,39 +71,47 @@ class DatabaseOperations:
             return []
 
     def get_trades_history(self, limit: int = 100, is_paper: bool = True) -> List[Trade]:
-        return self.db.query(Trade).filter(Trade.is_paper == is_paper).order_by(Trade.opened_at.desc()).limit(limit).all()
+        return self.db.query(Trade).filter(Trade.is_paper == is_paper).order_by(Trade.opened_at.desc()).limit(
+            limit).all()
 
     # === BALANCE ===
     def get_balance(self, asset: str = "USDT", is_paper: bool = True) -> float:
-        """Отримання балансу - через SQLAlchemy execute"""
+        """Отримання балансу - з кешем"""
+        # Перевіряємо кеш
+        cached = self._get_cached_balance(asset, is_paper)
+        if cached is not None:
+            return cached
+
         try:
-            from sqlalchemy import text
-            paper_val = 1 if is_paper else 0
+            # Простий ORM запит
+            balance_obj = self.db.query(Balance).filter(
+                Balance.asset == asset,
+                Balance.is_paper == (1 if is_paper else 0)
+            ).first()
 
-            # Використовуємо execute з text()
-            result = self.db.execute(
-                text("SELECT amount FROM balances WHERE asset = :asset AND is_paper = :paper"),
-                {"asset": asset, "paper": paper_val}
-            ).fetchone()
-
-            if result is None:
+            if balance_obj is None:
                 if is_paper:
-                    self.db.execute(
-                        text("INSERT INTO balances (asset, amount, is_paper) VALUES (:asset, :amount, :paper)"),
-                        {"asset": asset, "amount": 100.0, "paper": paper_val}
-                    )
+                    # Створюємо новий баланс
+                    new_balance = Balance(asset=asset, amount=100.0, is_paper=1)
+                    self.db.add(new_balance)
                     self.db.commit()
+                    self._set_cached_balance(asset, is_paper, 100.0)
                     return 100.0
                 return 0.0
 
-            return float(result[0])
+            amount = balance_obj.amount if balance_obj.amount is not None else 0.0
+            self._set_cached_balance(asset, is_paper, amount)
+            return amount
 
         except Exception as e:
             logger.error(f"Помилка отримання балансу: {e}")
+            # При помилці повертаємо кешоване значення або дефолт
+            cached = self._get_cached_balance(asset, is_paper)
+            if cached is not None:
+                return cached
             return 100.0 if is_paper else 0.0
 
     def get_trade_by_id(self, trade_id: int) -> Optional[Trade]:
-        """Отримання угоди за ID"""
         try:
             return self.db.query(Trade).filter(Trade.id == trade_id).first()
         except Exception as e:
@@ -85,28 +119,26 @@ class DatabaseOperations:
             return None
 
     def update_balance(self, asset: str, amount: float, is_paper: bool = True):
-        """Оновлення балансу - максимально спрощено"""
+        """Оновлення балансу з очищенням кешу"""
         try:
             paper_val = 1 if is_paper else 0
 
-            # Шукаємо існуючий запис
             balance_obj = self.db.query(Balance).filter(
                 Balance.asset == asset,
                 Balance.is_paper == paper_val
             ).first()
 
             if balance_obj:
-                # Оновлюємо
                 balance_obj.amount = amount
             else:
-                # Створюємо новий
-                balance_obj = Balance()
-                balance_obj.asset = asset
-                balance_obj.amount = amount
-                balance_obj.is_paper = paper_val
+                balance_obj = Balance(asset=asset, amount=amount, is_paper=paper_val)
                 self.db.add(balance_obj)
 
             self.db.commit()
+            # Очищаємо кеш
+            self._clear_balance_cache(asset, is_paper)
+            # Зберігаємо нове значення в кеш
+            self._set_cached_balance(asset, is_paper, amount)
             logger.info(f"Баланс оновлено: {asset} = {amount} (paper={is_paper})")
 
         except Exception as e:
@@ -116,21 +148,18 @@ class DatabaseOperations:
     def reset_paper_balance(self, initial_balance: float = 100.0):
         """Скидання paper балансу"""
         try:
-            # Видаляємо paper угоди
             self.db.query(Trade).filter(Trade.is_paper == 1).delete()
             self.db.query(Order).filter(Order.is_paper == 1).delete()
-
-            # Видаляємо paper баланс
             self.db.query(Balance).filter(Balance.is_paper == 1).delete()
 
-            # Створюємо новий баланс
-            new_balance = Balance()
-            new_balance.asset = "USDT"
-            new_balance.amount = initial_balance
-            new_balance.is_paper = 1
+            new_balance = Balance(asset="USDT", amount=initial_balance, is_paper=1)
             self.db.add(new_balance)
-
             self.db.commit()
+
+            # Очищаємо кеш
+            self._clear_balance_cache()
+            self._set_cached_balance("USDT", True, initial_balance)
+
             logger.info(f"Paper balance reset to {initial_balance} USDT")
 
         except Exception as e:
@@ -167,19 +196,15 @@ class DatabaseOperations:
 
     # === STATISTICS ===
     def get_daily_pnl(self, is_paper: bool = True) -> float:
-        """Отримати PnL за сьогодні"""
         today = datetime.now().date()
         trades = self.db.query(Trade).filter(
             Trade.is_paper == is_paper,
             Trade.status == OrderStatus.CLOSED,
             func.date(Trade.closed_at) == today
         ).all()
-
-        total_pnl = sum(t.pnl for t in trades)
-        return total_pnl
+        return sum(t.pnl for t in trades)
 
     def get_stats(self, is_paper: bool = True) -> dict:
-        """Отримати статистику"""
         closed_trades = self.db.query(Trade).filter(
             Trade.is_paper == is_paper,
             Trade.status == OrderStatus.CLOSED
