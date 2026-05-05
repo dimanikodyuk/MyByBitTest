@@ -21,6 +21,10 @@ from core.order_manager import OrderManager
 from telegram.bot import TelegramBot
 from exchange.bybit_client import BybitClient
 
+def global_exception_handler(exc_type, exc_value, exc_traceback):
+    logger.error("Unhandled exception", exc_info=(exc_type, exc_value, exc_traceback))
+    # Тут можна додати відправку в Telegram, якщо бот ініціалізований
+sys.excepthook = global_exception_handler
 
 class AutoTradingBot:
     """Головний клас бота"""
@@ -119,28 +123,30 @@ class AutoTradingBot:
             logger.error(f"Помилка запуску веб-інтерфейсу: {e}")
 
     async def _subscribe_websockets(self):
-        """Підписка на WebSocket для всіх пар"""
+        """Підписка на WebSocket для всіх пар (використовує один WebSocket для всіх)"""
         pairs = config.get('trading.pairs', ['BTCUSDT'])
         timeframe = config.get('trading.base_timeframe', '5m')
 
-        # Створюємо синхронний callback
+        # Створюємо синхронний callback з обробкою помилок
         def on_candle(candle):
             """Синхронний callback для нових свічок"""
-            if self.order_manager and self.running:
-                pair = candle['symbol']
-                # Прямий синхронний виклик (без asyncio.create_task)
-                self.order_manager.on_new_candle(pair, candle)
+            try:
+                if self.order_manager and self.running:
+                    pair = candle.get('symbol')
+                    if pair:
+                        self.order_manager.on_new_candle(pair, candle)
+            except Exception as e:
+                logger.error(f"Помилка в callback свічки: {e}")
 
+        # Підписуємось на всі пари через один клієнт
+        # BybitClient вже оптимізований для багатьох підписок
         for pair in pairs:
-            self.exchange.subscribe_candles(pair, timeframe, on_candle)
-            logger.info(f"Підписка на {pair} {timeframe} свічки")
-            await asyncio.sleep(0.5)
-
-    def global_exception_handler(exc_type, exc_value, exc_traceback):
-        logger.error("Unhandled exception", exc_info=(exc_type, exc_value, exc_traceback))
-        # Тут можна додати відправку в Telegram
-
-    sys.excepthook = global_exception_handler
+            try:
+                self.exchange.subscribe_candles(pair, timeframe, on_candle)
+                logger.info(f"Підписка на {pair} {timeframe} свічки")
+            except Exception as e:
+                logger.error(f"Помилка підписки на {pair}: {e}")
+            await asyncio.sleep(0.3)  # Невелика затримка між підписками
 
     async def run(self):
         """Запуск бота"""

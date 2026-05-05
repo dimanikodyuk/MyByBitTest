@@ -148,3 +148,18 @@ class ForecastDB(Base):
         Index('idx_forecasts_created_at', 'created_at'),
         Index('idx_forecasts_expires_at', 'expires_at'),
     )
+
+# Додати після класу ForecastDB
+class RiskState(Base):
+    __tablename__ = "risk_state"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    is_paper = Column(Integer, default=1)
+    daily_loss_reached = Column(Integer, default=0)  # 0=False, 1=True
+    last_reset_date = Column(DateTime, nullable=False)
+    daily_pnl = Column(Float, default=0.0)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        Index('idx_risk_state_paper', 'is_paper', unique=True),
+    )

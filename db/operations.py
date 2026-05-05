@@ -1,10 +1,9 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import func, and_
+from sqlalchemy import func, and_, text
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict
 from db.models import Trade, Signal, Balance, Log, Order, OrderStatus, OrderSide, SignalType
 from utils.logger import logger
-
 
 class DatabaseOperations:
     """CRUD операції з БД"""
@@ -41,28 +40,48 @@ class DatabaseOperations:
     def get_open_trades(self, pair: Optional[str] = None, is_paper: bool = True) -> List[Trade]:
         """Отримання відкритих угод"""
         try:
+            # Імпортуємо тут, щоб уникнути циркулярних імпортів
+            from db.models import OrderStatus
+
+            paper_val = 1 if is_paper else 0
+
+            # Простий ORM запит - без raw SQL
             query = self.db.query(Trade).filter(
                 Trade.status == OrderStatus.PENDING,
-                Trade.is_paper == int(is_paper)
+                Trade.is_paper == paper_val
             )
+
             if pair:
                 query = query.filter(Trade.pair == pair)
-            return query.all()
+
+            # Додаємо сортування та ліміт
+            query = query.order_by(Trade.opened_at.desc()).limit(100)
+
+            # Виконуємо запит
+            trades = query.all()
+
+            # Логуємо результат
+            logger.debug(f"Знайдено {len(trades)} відкритих угод (pair={pair}, is_paper={is_paper})")
+
+            return trades
+
         except Exception as e:
             logger.error(f"Помилка отримання відкритих угод: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return []
 
     def get_trades_history(self, limit: int = 100, is_paper: bool = True) -> List[Trade]:
-        return self.db.query(Trade).filter(Trade.is_paper == is_paper).order_by(Trade.opened_at.desc()).limit(
-            limit).all()
+        paper_val = 1 if is_paper else 0
+        return self.db.query(Trade).filter(Trade.is_paper == paper_val).order_by(Trade.opened_at.desc()).limit(limit).all()
 
     # === BALANCE ===
     def get_balance(self, asset: str = "USDT", is_paper: bool = True) -> float:
-        """Отримання балансу - тільки ORM"""
+        """Отримання балансу"""
+        import traceback
         try:
             paper_val = 1 if is_paper else 0
 
-            # Спрощений запит без функцій
             balance_obj = self.db.query(Balance).filter(
                 Balance.asset == asset,
                 Balance.is_paper == paper_val
@@ -70,23 +89,29 @@ class DatabaseOperations:
 
             if balance_obj is None:
                 if is_paper:
-                    # Створюємо новий баланс
-                    new_balance = Balance(asset=asset, amount=100.0, is_paper=paper_val)
+                    from utils.config_loader import config
+                    initial = float(config.get('paper_trading.initial_balance', 100.0))
+                    new_balance = Balance(asset=asset, amount=initial, is_paper=paper_val)
                     self.db.add(new_balance)
                     self.db.commit()
-                    return 100.0
+                    self.db.refresh(new_balance)
+                    logger.info(f"Створено новий paper баланс: {initial} {asset}")
+                    return initial
                 return 0.0
 
-            # Перевіряємо чи amount не None
-            if balance_obj.amount is None:
+            amount = balance_obj.amount
+            if amount is None:
+                logger.warning(f"Balance.amount is None для {asset} (is_paper={is_paper})")
                 return 0.0
 
-            return float(balance_obj.amount)
+            return float(amount)
 
         except Exception as e:
-            logger.error(f"Помилка отримання балансу: {e}")
-            # У випадку помилки повертаємо безпечне значення
-            return 100.0 if is_paper else 0.0
+            logger.error(f"Помилка отримання балансу ({asset}, is_paper={is_paper}): {e}")
+            logger.error(traceback.format_exc())
+            # Повертаємо 0, щоб вищий рівень міг коректно відреагувати
+            # (НЕ 100.0 — це маскувало б справжні помилки)
+            return 0.0
 
     def update_balance(self, asset: str, amount: float, is_paper: bool = True):
         """Оновлення балансу"""
@@ -105,7 +130,7 @@ class DatabaseOperations:
                 self.db.add(balance_obj)
 
             self.db.commit()
-            logger.info(f"Баланс оновлено: {asset} = {amount} (paper={is_paper})")
+            logger.info(f"Баланс оновлено: {asset} = {amount:.4f} (paper={is_paper})")
 
         except Exception as e:
             logger.error(f"Помилка оновлення балансу: {e}")
@@ -163,16 +188,18 @@ class DatabaseOperations:
     # === STATISTICS ===
     def get_daily_pnl(self, is_paper: bool = True) -> float:
         today = datetime.now().date()
+        paper_val = 1 if is_paper else 0
         trades = self.db.query(Trade).filter(
-            Trade.is_paper == is_paper,
+            Trade.is_paper == paper_val,
             Trade.status == OrderStatus.CLOSED,
             func.date(Trade.closed_at) == today
         ).all()
-        return sum(t.pnl for t in trades)
+        return sum(t.pnl or 0.0 for t in trades)
 
     def get_stats(self, is_paper: bool = True) -> dict:
+        paper_val = 1 if is_paper else 0
         closed_trades = self.db.query(Trade).filter(
-            Trade.is_paper == is_paper,
+            Trade.is_paper == paper_val,
             Trade.status == OrderStatus.CLOSED
         ).all()
 
@@ -185,13 +212,14 @@ class DatabaseOperations:
                 "max_drawdown": 0
             }
 
-        wins = len([t for t in closed_trades if t.pnl > 0])
-        total_pnl = sum(t.pnl for t in closed_trades)
+        pnl_list = [t.pnl or 0.0 for t in closed_trades]
+        wins = len([p for p in pnl_list if p > 0])
+        total_pnl = sum(pnl_list)
 
         return {
             "total_trades": len(closed_trades),
-            "win_rate": (wins / len(closed_trades)) * 100,
-            "total_pnl": total_pnl,
-            "avg_pnl": total_pnl / len(closed_trades),
-            "max_drawdown": min(t.pnl for t in closed_trades) if closed_trades else 0
+            "win_rate": round((wins / len(closed_trades)) * 100, 2),
+            "total_pnl": round(total_pnl, 4),
+            "avg_pnl": round(total_pnl / len(closed_trades), 4),
+            "max_drawdown": round(min(pnl_list), 4) if pnl_list else 0
         }

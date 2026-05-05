@@ -121,79 +121,183 @@ class TradingStrategy:
 
         # Якщо немає даних для підтвердження - пропускаємо перевірку
         if df_15m is None or len(df_15m) < 10:
+            logger.debug("Немає даних 15m - пропускаємо перевірку")
             return True
 
-        # Перевірка 15m
         try:
+            # Отримуємо назви колонок
+            ema_fast_col = f'EMA_{self.ema_fast}'
+            ema_slow_col = f'EMA_{self.ema_slow}'
+
+            # Перевіряємо чи є колонки в даних
+            if ema_fast_col not in df_15m.columns or 'RSI' not in df_15m.columns:
+                logger.debug(f"Відсутні колонки в 15m: {ema_fast_col} або RSI")
+                return True
+
             last_15m = df_15m.iloc[-1]
+
             if signal == "LONG":
-                ema_condition = last_15m[f'EMA_{self.ema_fast}'] > last_15m[f'EMA_{self.ema_slow}']
-                rsi_condition = last_15m['RSI'] > 40
+                ema_condition = last_15m[ema_fast_col] > last_15m[ema_slow_col]
+                rsi_condition = 30 <= last_15m['RSI'] <= 75
+                logger.debug(f"15m LONG: EMA={ema_condition}, RSI={last_15m['RSI']:.1f} ({rsi_condition})")
                 if not (ema_condition and rsi_condition):
                     return False
-            else:
-                ema_condition = last_15m[f'EMA_{self.ema_fast}'] < last_15m[f'EMA_{self.ema_slow}']
-                rsi_condition = last_15m['RSI'] < 60
+            else:  # SHORT
+                ema_condition = last_15m[ema_fast_col] < last_15m[ema_slow_col]
+                rsi_condition = 25 <= last_15m['RSI'] <= 70
+                logger.debug(f"15m SHORT: EMA={ema_condition}, RSI={last_15m['RSI']:.1f} ({rsi_condition})")
                 if not (ema_condition and rsi_condition):
                     return False
         except Exception as e:
-            logger.debug(f"Помилка підтвердження на 15m: {e}")
+            logger.error(f"Помилка підтвердження на 15m: {e}")
             return False
 
         # Перевірка 1h
         if df_1h is not None and len(df_1h) > 10:
             try:
+                ema_fast_col = f'EMA_{self.ema_fast}'
+                ema_slow_col = f'EMA_{self.ema_slow}'
+
+                if ema_fast_col not in df_1h.columns:
+                    logger.debug(f"Відсутні колонки в 1h: {ema_fast_col}")
+                    return True
+
                 last_1h = df_1h.iloc[-1]
                 if signal == "LONG":
-                    ema_condition = last_1h[f'EMA_{self.ema_fast}'] > last_1h[f'EMA_{self.ema_slow}']
-                    if not ema_condition:
+                    if last_1h[ema_fast_col] <= last_1h[ema_slow_col]:
+                        logger.debug(
+                            f"1h LONG: EMA не підтверджує ({last_1h[ema_fast_col]:.2f} <= {last_1h[ema_slow_col]:.2f})")
                         return False
-                else:
-                    ema_condition = last_1h[f'EMA_{self.ema_fast}'] < last_1h[f'EMA_{self.ema_slow}']
-                    if not ema_condition:
+                    else:
+                        logger.debug(f"1h LONG: EMA підтверджує")
+                else:  # SHORT
+                    if last_1h[ema_fast_col] >= last_1h[ema_slow_col]:
+                        logger.debug(f"1h SHORT: EMA не підтверджує")
                         return False
+                    else:
+                        logger.debug(f"1h SHORT: EMA підтверджує")
             except Exception as e:
                 logger.debug(f"Помилка підтвердження на 1h: {e}")
 
+        logger.info(f"✅ Сигнал {signal} ПІДТВЕРДЖЕНО на 15m/1h")
         return True
 
     def detect_candle_patterns(self, df: pd.DataFrame) -> Dict:
-        """Розпізнавання свічкових патернів"""
+        """Розпізнавання свічкових патернів на останній свічці"""
+        if df is None or len(df) < 3:
+            return {"patterns": [], "signal": "neutral"}
+
         last = df.iloc[-1]
         prev = df.iloc[-2]
+        prev2 = df.iloc[-3]
 
-        patterns = {}
+        patterns = []
+        signal = "neutral"
 
-        # Body та тіні
+        # Розрахунок тіл та тіней
         body = abs(last['close'] - last['open'])
         upper_shadow = last['high'] - max(last['close'], last['open'])
         lower_shadow = min(last['close'], last['open']) - last['low']
+        total_range = last['high'] - last['low'] if last['high'] != last['low'] else 1
 
-        # Молот (Hammer) - довга нижня тінь, маленьке тіло
-        if lower_shadow > body * 2 and upper_shadow < body * 0.3:
-            patterns['hammer'] = 'bullish' if last['close'] > prev['close'] else 'neutral'
+        prev_body = abs(prev['close'] - prev['open'])
+        prev_total_range = prev['high'] - prev['low'] if prev['high'] != prev['low'] else 1
 
-        # Висячий чоловічок (Hanging Man) - на вершині
-        if lower_shadow > body * 2 and upper_shadow < body * 0.3:
-            patterns['hanging_man'] = 'bearish' if last['close'] < prev['close'] and last['high'] > prev[
-                'high'] else 'neutral'
+        # 1. Молот (Hammer) - довга нижня тінь, маленьке тіло
+        if (lower_shadow > body * 2 and upper_shadow < body * 0.5 and
+                body > 0 and total_range > 0 and lower_shadow / total_range > 0.6):
+            patterns.append({
+                "name": "hammer",
+                "type": "bullish",
+                "strength": "strong",
+                "description": "Молот - потенційний розворот вгору"
+            })
+            signal = "bullish"
 
-        # Біла/Чорна свічка
-        patterns['is_bullish'] = last['close'] > last['open']
+        # 2. Висячий чоловічок (Hanging Man) - на вершині
+        if (lower_shadow > body * 2 and upper_shadow < body * 0.5 and
+                last['close'] < last['open'] and last['high'] > prev['high']):
+            patterns.append({
+                "name": "hanging_man",
+                "type": "bearish",
+                "strength": "strong",
+                "description": "Висячий чоловічок - потенційний розворот вниз"
+            })
+            signal = "bearish"
 
-        # Доджі (Doji) - майже однакові open/close
-        patterns['doji'] = body / (last['high'] - last['low']) < 0.1 if last['high'] != last['low'] else False
-
-        # Поглинання (Engulfing)
+        # 3. Поглинання биче (Bullish Engulfing)
         if (last['close'] > last['open'] and prev['close'] < prev['open'] and
                 last['close'] > prev['open'] and last['open'] < prev['close']):
-            patterns['bullish_engulfing'] = True
+            patterns.append({
+                "name": "bullish_engulfing",
+                "type": "bullish",
+                "strength": "very_strong",
+                "description": "Биче поглинання - сильний розворот вгору"
+            })
+            signal = "bullish"
 
+        # 4. Поглинання ведмеже (Bearish Engulfing)
         if (last['close'] < last['open'] and prev['close'] > prev['open'] and
                 last['close'] < prev['open'] and last['open'] > prev['close']):
-            patterns['bearish_engulfing'] = True
+            patterns.append({
+                "name": "bearish_engulfing",
+                "type": "bearish",
+                "strength": "very_strong",
+                "description": "Ведмеже поглинання - сильний розворот вниз"
+            })
+            signal = "bearish"
 
-        return patterns
+        # 5. Доджі (Doji)
+        if total_range > 0 and body / total_range < 0.1:
+            patterns.append({
+                "name": "doji",
+                "type": "neutral",
+                "strength": "weak",
+                "description": "Доджі - невизначеність, можливий розворот"
+            })
+
+        # 6. Ранкова зірка (Morning Star)
+        if (prev2['close'] < prev2['open'] and  # перша ведмежа
+                abs(prev['close'] - prev['open']) < abs(prev2['close'] - prev2['open']) * 0.3 and
+                last['close'] > last['open'] and
+                last['close'] > (prev2['high'] + prev2['low']) / 2):
+            patterns.append({
+                "name": "morning_star",
+                "type": "bullish",
+                "strength": "very_strong",
+                "description": "Ранкова зірка - сильний розворот вгору"
+            })
+            signal = "bullish"
+
+        # 7. Вечірня зірка (Evening Star)
+        if (prev2['close'] > prev2['open'] and
+                abs(prev['close'] - prev['open']) < abs(prev2['close'] - prev2['open']) * 0.3 and
+                last['close'] < last['open'] and
+                last['close'] < (prev2['high'] + prev2['low']) / 2):
+            patterns.append({
+                "name": "evening_star",
+                "type": "bearish",
+                "strength": "very_strong",
+                "description": "Вечірня зірка - сильний розворот вниз"
+            })
+            signal = "bearish"
+
+        # 8. Молот на ведмежому тренді (підтверджений)
+        if (signal == "bullish" and last['close'] < prev['close'] and
+                lower_shadow > body * 2.5):
+            patterns.append({
+                "name": "hammer_confirmed",
+                "type": "bullish",
+                "strength": "strong",
+                "description": "Підтверджений молот - хороший сигнал на купівлю"
+            })
+
+        return {
+            "patterns": patterns,
+            "signal": signal,
+            "current_price": last['close'],
+            "timestamp": datetime.now().isoformat()
+        }
 
     def get_bollinger_signal(self, df: pd.DataFrame) -> str:
         """Сигнал на основі Bollinger Bands"""
@@ -237,9 +341,16 @@ class TradingStrategy:
         last = df.iloc[-1]
         prev = df.iloc[-2]
 
-        # Основні умови
-        ema_condition = last[f'EMA_{self.ema_fast}'] > last[f'EMA_{self.ema_slow}']
-        rsi_condition = self.rsi_min <= last['RSI'] <= self.rsi_max
+        # Основні умови (використовуємо self.ema_fast який має бути 21 в config)
+        ema_fast_col = f'EMA_{self.ema_fast}'
+        ema_slow_col = f'EMA_{self.ema_slow}'
+
+        if ema_fast_col not in last or ema_slow_col not in last:
+            return False, {}
+
+        ema_condition = last[ema_fast_col] > last[ema_slow_col]
+        # LONG: RSI в межах 35-70 (нейтральна зона без перекупленості)
+        rsi_condition = 35 <= last['RSI'] <= 70
         macd_condition = last['MACD'] > last['MACD_Signal'] and prev['MACD'] <= prev['MACD_Signal']
         volume_condition = last['Volume_Ratio'] > self.min_volume_ratio if not pd.isna(last['Volume_Ratio']) else True
 
@@ -266,8 +377,8 @@ class TradingStrategy:
         is_long = all(conditions.values())
 
         indicators = {
-            'ema_fast': float(last[f'EMA_{self.ema_fast}']),
-            'ema_slow': float(last[f'EMA_{self.ema_slow}']),
+            'ema_fast': float(last[ema_fast_col]),
+            'ema_slow': float(last[ema_slow_col]),
             'rsi': float(last['RSI']),
             'macd': float(last['MACD']),
             'macd_signal': float(last['MACD_Signal']),
@@ -277,6 +388,9 @@ class TradingStrategy:
             'adx': float(last['ADX']) if 'ADX' in df.columns else 0,
             'stoch_k': float(last['StochRSI_K']) if 'StochRSI_K' in df.columns else 50
         }
+
+        logger.debug(f"LONG сигнал: EMA={ema_condition}, RSI={rsi_condition}, MACD={macd_condition}, "
+                     f"VOL={volume_condition}, BB={bb_condition}, ADX={adx_condition}, Stoch={stoch_condition}")
 
         return is_long, indicators
 
@@ -288,11 +402,19 @@ class TradingStrategy:
         last = df.iloc[-1]
         prev = df.iloc[-2]
 
-        ema_condition = last[f'EMA_{self.ema_fast}'] < last[f'EMA_{self.ema_slow}']
-        rsi_condition = self.rsi_min <= last['RSI'] <= self.rsi_max
+        ema_fast_col = f'EMA_{self.ema_fast}'
+        ema_slow_col = f'EMA_{self.ema_slow}'
+
+        if ema_fast_col not in last or ema_slow_col not in last:
+            return False, {}
+
+        ema_condition = last[ema_fast_col] < last[ema_slow_col]
+        # SHORT: RSI в межах 30-65 (нейтральна зона без перепродяності)
+        rsi_condition = 30 <= last['RSI'] <= 65
         macd_condition = last['MACD'] < last['MACD_Signal'] and prev['MACD'] >= prev['MACD_Signal']
         volume_condition = last['Volume_Ratio'] > self.min_volume_ratio if not pd.isna(last['Volume_Ratio']) else True
 
+        # Додаткові підтвердження
         bb_signal = self.get_bollinger_signal(df)
         bb_condition = bb_signal != "oversold"
         adx_condition = last['ADX'] > 20 if 'ADX' in df.columns else True
@@ -311,15 +433,19 @@ class TradingStrategy:
         is_short = all(conditions.values())
 
         indicators = {
-            'ema_fast': float(last[f'EMA_{self.ema_fast}']),
-            'ema_slow': float(last[f'EMA_{self.ema_slow}']),
+            'ema_fast': float(last[ema_fast_col]),
+            'ema_slow': float(last[ema_slow_col]),
             'rsi': float(last['RSI']),
             'macd': float(last['MACD']),
             'macd_signal': float(last['MACD_Signal']),
             'volume_ratio': float(last['Volume_Ratio']) if not pd.isna(last['Volume_Ratio']) else 1.0,
             'price': float(last['close']),
             'bb_position': float(last['BB_Position']) if 'BB_Position' in df.columns else 0.5,
-            'adx': float(last['ADX']) if 'ADX' in df.columns else 0
+            'adx': float(last['ADX']) if 'ADX' in df.columns else 0,
+            'stoch_k': float(last['StochRSI_K']) if 'StochRSI_K' in df.columns else 50
         }
+
+        logger.debug(f"SHORT сигнал: EMA={ema_condition}, RSI={rsi_condition}, MACD={macd_condition}, "
+                     f"VOL={volume_condition}, BB={bb_condition}, ADX={adx_condition}, Stoch={stoch_condition}")
 
         return is_short, indicators

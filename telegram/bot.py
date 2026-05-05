@@ -347,6 +347,37 @@ To switch mode, edit .env file and restart bot"""
             await self.send_error_from_exception(e, "cmd_mode")
             await message.reply("❌ Помилка при отриманні режиму")
 
+    async def send_error_to_admin(self, error_msg: str, error_type: str = "ERROR",
+                                  traceback_info: str = None, component: str = None):
+        """Відправка помилки адміну"""
+        if not self.bot or not self.chat_id:
+            logger.warning("Cannot send error - Telegram not configured")
+            return
+
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        text = f"""🚨 *СИСТЕМНА ПОМИЛКА* 🚨
+
+    📅 Час: {current_time}
+    ⚠️ Тип: {error_type}
+    🔧 Компонент: {component or 'Unknown'}
+
+    📝 Повідомлення:
+    `{error_msg[:300]}`"""
+
+        if traceback_info:
+            tb_short = traceback_info[:400] if len(traceback_info) > 400 else traceback_info
+            text += f"\n\n📚 Stack trace:\n`{tb_short}`"
+
+        try:
+            await self.bot.send_message(
+                chat_id=self.chat_id,
+                text=text,
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            logger.error(f"Failed to send error to Telegram: {e}")
+
     async def cmd_reset(self, message: types.Message):
         """/reset - скидання paper балансу"""
         try:

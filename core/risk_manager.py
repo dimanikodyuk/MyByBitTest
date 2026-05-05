@@ -1,12 +1,14 @@
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from datetime import datetime, date
 from db.operations import DatabaseOperations
+from db.models import RiskState
 from utils.config_loader import config
 from utils.logger import logger
+from sqlalchemy.orm import Session
 
 
 class RiskManager:
-    """Управління ризиками"""
+    """Управління ризиками зі збереженням стану в БД"""
 
     def __init__(self, db_ops: DatabaseOperations, is_paper: bool = True):
         self.db = db_ops
@@ -16,11 +18,63 @@ class RiskManager:
         self.max_daily_loss = config.get('risk.max_daily_loss', 5.0)
         self.min_balance = config.get('risk.min_balance_usdt', 10.0)
 
-        self.daily_loss_reached = False
-        self.today = date.today()
+        # Завантажуємо стан з БД
+        self._load_state()
 
-    def can_open_trade(self, pair: str) -> tuple[bool, str]:
+    def _get_db_session(self) -> Session:
+        """Отримання сесії БД"""
+        return self.db.db  # DatabaseOperations має атрибут db
+
+    def _load_state(self):
+        """Завантаження стану з БД"""
+        try:
+            session = self._get_db_session()
+            state = session.query(RiskState).filter(
+                RiskState.is_paper == (1 if self.is_paper else 0)
+            ).first()
+
+            if state:
+                self.daily_loss_reached = bool(state.daily_loss_reached)
+                self.today = state.last_reset_date.date() if state.last_reset_date else date.today()
+                self._saved_daily_pnl = state.daily_pnl
+                logger.info(f"Loaded risk state: daily_loss_reached={self.daily_loss_reached}, date={self.today}")
+            else:
+                self.daily_loss_reached = False
+                self.today = date.today()
+                self._saved_daily_pnl = 0.0
+                self._save_state()
+        except Exception as e:
+            logger.error(f"Помилка завантаження стану ризику: {e}")
+            self.daily_loss_reached = False
+            self.today = date.today()
+            self._saved_daily_pnl = 0.0
+
+    def _save_state(self):
+        """Збереження стану в БД"""
+        try:
+            session = self._get_db_session()
+            state = session.query(RiskState).filter(
+                RiskState.is_paper == (1 if self.is_paper else 0)
+            ).first()
+
+            if not state:
+                state = RiskState(is_paper=1 if self.is_paper else 0)
+                session.add(state)
+
+            state.daily_loss_reached = 1 if self.daily_loss_reached else 0
+            state.last_reset_date = datetime.combine(self.today, datetime.min.time())
+            state.daily_pnl = self._saved_daily_pnl
+            state.updated_at = datetime.now()
+
+            session.commit()
+            logger.debug(f"Saved risk state: daily_loss_reached={self.daily_loss_reached}")
+        except Exception as e:
+            logger.error(f"Помилка збереження стану ризику: {e}")
+
+    def can_open_trade(self, pair: str) -> Tuple[bool, str]:
         """Перевірка, чи можна відкрити нову угоду"""
+        # Оновлюємо денну перевірку перед кожною перевіркою
+        self.update_daily_check()
 
         # Перевірка денного ліміту
         if self.daily_loss_reached:
@@ -43,8 +97,9 @@ class RiskManager:
 
         # Перевірка денного збитку
         daily_pnl = self.db.get_daily_pnl(self.is_paper)
-        if abs(daily_pnl) > (balance * self.max_daily_loss / 100):
+        if abs(daily_pnl) > (balance * self.max_daily_loss / 100) if balance > 0 else 0:
             self.daily_loss_reached = True
+            self._save_state()
             logger.warning(f"Daily loss limit reached: {daily_pnl} USDT")
             return False, f"Daily loss limit reached ({self.max_daily_loss}%)"
 
@@ -68,12 +123,19 @@ class RiskManager:
         # Кількість одиниць
         quantity = risk_amount / risk_per_unit
 
-        # Мінімальний об'єм для Bybit
+        # Мінімальний об'єм для Bybit (можна розширити для різних пар)
         min_qty = 0.001
+        if pair == 'DOGEUSDT':
+            min_qty = 1.0
+        elif pair == 'SHIBUSDT':
+            min_qty = 100.0
+        elif pair == 'BTCUSDT':
+            min_qty = 0.0001
+
         if quantity < min_qty:
             quantity = min_qty
 
-        quantity = round(quantity, 6)  # Збільшимо точність
+        quantity = round(quantity, 6)
 
         # Перевірка балансу
         required_balance = quantity * entry_price
@@ -88,7 +150,7 @@ class RiskManager:
             quantity = max_quantity
             quantity = round(quantity, 6)
 
-        logger.debug(f"📐 Розмір позиції: {quantity} (ризик={self.risk_per_trade}%, баланс={balance:.2f})")
+        logger.debug(f"📐 Розмір позиції для {pair}: {quantity} (ризик={self.risk_per_trade}%, баланс={balance:.2f})")
         return quantity
 
     def update_daily_check(self):
@@ -97,12 +159,18 @@ class RiskManager:
         if today != self.today:
             self.today = today
             self.daily_loss_reached = False
+            self._saved_daily_pnl = 0.0
+            self._save_state()
             logger.info("Daily limit reset for new day")
 
     def get_daily_stats(self) -> Dict:
         """Отримати денну статистику"""
         daily_pnl = self.db.get_daily_pnl(self.is_paper)
         balance = self.db.get_balance("USDT", self.is_paper)
+
+        # Оновлюємо збережений денний PnL
+        self._saved_daily_pnl = daily_pnl
+        self._save_state()
 
         return {
             "daily_pnl": daily_pnl,

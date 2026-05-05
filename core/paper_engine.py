@@ -19,7 +19,10 @@ class PaperEngine:
     def execute_buy(self, pair: str, quantity: float, current_price: float) -> Optional[Dict]:
         """Виконання buy ордера (paper)"""
 
-        # Отримуємо поточний баланс (вільні кошти)
+        if current_price <= 0:
+            logger.error(f"❌ Некорректная цена для {pair}: {current_price}")
+            return None
+
         balance = self.db.get_balance("USDT", is_paper=True)
         required = quantity * current_price
 
@@ -35,7 +38,7 @@ class PaperEngine:
         # Комісія
         commission_amount = required * (self.commission / 100)
 
-        # Віднімаємо ТІЛЬКИ вартість позиції + комісію з балансу
+        # Віднімаємо вартість позиції + комісію
         new_balance = balance - required - commission_amount
         self.db.update_balance("USDT", new_balance, is_paper=True)
 
@@ -43,13 +46,15 @@ class PaperEngine:
         trade_data = {
             "pair": pair,
             "side": OrderSide.BUY,
-            "entry_price": execution_price,
+            "entry_price": execution_price,  # ← має бути execution_price, а не 0
             "quantity": quantity,
             "commission": commission_amount,
             "slippage": slippage_amount,
             "is_paper": 1,
             "status": OrderStatus.PENDING
         }
+
+        logger.info(f"📝 Створення угоди: {trade_data}")
 
         trade = self.db.create_trade(trade_data)
 
@@ -76,41 +81,38 @@ class PaperEngine:
         spread_amount = current_price * (self.spread / 100)
         execution_price = current_price - slippage_amount - spread_amount
 
-        # Розрахунок PnL
-        if trade.side == OrderSide.BUY:
-            pnl = (execution_price - trade.entry_price) * trade.quantity
-            pnl_percent = ((execution_price - trade.entry_price) / trade.entry_price) * 100
-            # Повертаємо кошти + прибуток
-            return_amount = (execution_price * trade.quantity) - (
-                        execution_price * trade.quantity * self.commission / 100)
-        else:  # SELL (short)
-            pnl = (trade.entry_price - execution_price) * trade.quantity
-            pnl_percent = ((trade.entry_price - execution_price) / trade.entry_price) * 100
-            # Для SHORT: повертаємо заблоковану суму + прибуток (або віднімаємо збиток)
-            return_amount = (trade.entry_price * trade.quantity) + pnl
-            return_amount = return_amount - (execution_price * trade.quantity * self.commission / 100)
-
         # Комісія на закриття
         close_commission = (execution_price * trade.quantity) * (self.commission / 100)
 
+        # Розрахунок PnL (без комісій — вони окремо)
+        if trade.side == OrderSide.BUY:
+            pnl = (execution_price - trade.entry_price) * trade.quantity - close_commission
+            pnl_percent = ((execution_price - trade.entry_price) / trade.entry_price) * 100
+            # Повертаємо: вартість продажу мінус комісія закриття
+            return_amount = execution_price * trade.quantity - close_commission
+        else:  # SHORT
+            pnl = (trade.entry_price - execution_price) * trade.quantity - close_commission
+            pnl_percent = ((trade.entry_price - execution_price) / trade.entry_price) * 100
+            # Для SHORT повертаємо: заблокована сума + прибуток (або - збиток) мінус комісія
+            return_amount = trade.entry_price * trade.quantity + pnl
+
         # Оновлюємо баланс
         balance = self.db.get_balance("USDT", is_paper=True)
-        new_balance = balance + return_amount - close_commission
+        new_balance = balance + return_amount
         self.db.update_balance("USDT", new_balance, is_paper=True)
 
-        # Оновлюємо угоду
         updates = {
             "exit_price": execution_price,
-            "pnl": pnl,
-            "pnl_percent": pnl_percent,
-            "commission": trade.commission + close_commission,
+            "pnl": round(pnl, 6),
+            "pnl_percent": round(pnl_percent, 4),
+            "commission": round(trade.commission + close_commission, 6),
             "status": OrderStatus.CLOSED,
             "closed_at": datetime.now()
         }
         self.db.update_trade(trade_id, updates)
 
         logger.info(f"[PAPER] CLOSE {trade.quantity} {trade.pair} @ {execution_price:.2f} | "
-                    f"PnL: {pnl:.2f} ({pnl_percent:.2f}%) | Balance: {new_balance:.2f}")
+                    f"PnL: {pnl:.4f} ({pnl_percent:.2f}%) | Commission: {close_commission:.4f} | Balance: {new_balance:.2f}")
 
         return {
             "trade_id": trade_id,
@@ -122,10 +124,13 @@ class PaperEngine:
     def execute_short(self, pair: str, quantity: float, current_price: float) -> Optional[Dict]:
         """Виконання short ордера (paper)"""
 
-        balance = self.db.get_balance("USDT", is_paper=True)
-        position_value = quantity * current_price  # Повна вартість позиції
+        if current_price <= 0:
+            logger.error(f"❌ Некорректная цена для {pair}: {current_price}")
+            return None
 
-        # Для SHORT - блокуємо повну вартість позиції
+        balance = self.db.get_balance("USDT", is_paper=True)
+        position_value = quantity * current_price
+
         if balance < position_value:
             logger.warning(f"Insufficient balance for short: {balance} < {position_value}")
             return None
@@ -138,14 +143,14 @@ class PaperEngine:
         # Комісія
         commission_amount = position_value * (self.commission / 100)
 
-        # Блокуємо ПОВНУ вартість позиції (не маржу)
+        # Блокуємо повну вартість позиції
         new_balance = balance - position_value - commission_amount
         self.db.update_balance("USDT", new_balance, is_paper=True)
 
         trade_data = {
             "pair": pair,
             "side": OrderSide.SELL,
-            "entry_price": execution_price,
+            "entry_price": execution_price,  # ← має бути execution_price, а не 0
             "quantity": quantity,
             "commission": commission_amount,
             "slippage": slippage_amount,
@@ -153,11 +158,12 @@ class PaperEngine:
             "status": OrderStatus.PENDING
         }
 
+        logger.info(f"📝 Створення SHORT угоди: {trade_data}")
+
         trade = self.db.create_trade(trade_data)
 
         logger.info(f"[PAPER] SHORT {quantity} {pair} @ {execution_price:.2f} | "
-                    f"Position: ${position_value:.2f} | Commission: {commission_amount:.4f} | "
-                    f"Free Balance: {new_balance:.2f}")
+                    f"Position: ${position_value:.2f} | Commission: {commission_amount:.4f}")
 
         return {
             "trade_id": trade.id,

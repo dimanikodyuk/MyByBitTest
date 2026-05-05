@@ -3,14 +3,17 @@ from utils.config_loader import config
 from utils.logger import logger
 import pandas as pd
 import time
-from threading import Lock
+import json
+import threading
+from typing import Dict, List, Callable, Optional
+from collections import defaultdict
 
 
 class BybitClient:
     """Клієнт для роботи з Bybit API (REST + WebSocket)"""
 
     _instance = None
-    _lock = Lock()
+    _lock = threading.Lock()
 
     def __new__(cls):
         if cls._instance is None:
@@ -33,11 +36,13 @@ class BybitClient:
             testnet=self.testnet
         )
 
-        self._ws_public = None
-        self._ws_private = None
-        self._price_callbacks = []
-        self._candle_callbacks = []
-        self._order_callbacks = []
+        # WebSocket з'єднання
+        self._ws_connections = {}  # topic -> websocket instance
+        self._ws_threads = {}
+        self._callbacks = defaultdict(list)
+        self._running = True
+        self._reconnect_delay = 5
+        self._max_reconnect_delay = 60
 
         # Мапа інтервалів
         self.interval_map = {
@@ -92,7 +97,7 @@ class BybitClient:
             logger.error(f"Exception in get_klines: {e}")
             return None
 
-    def get_current_price(self, symbol: str) -> float:
+    def get_current_price(self, symbol: str) -> Optional[float]:
         """Отримання поточної ціни"""
         try:
             response = self.session.get_tickers(category="spot", symbol=symbol)
@@ -100,7 +105,7 @@ class BybitClient:
                 return float(response['result']['list'][0]['lastPrice'])
             return None
         except Exception as e:
-            logger.error(f"Error getting price: {e}")
+            logger.error(f"Error getting price for {symbol}: {e}")
             return None
 
     def get_balance(self, coin: str = "USDT") -> float:
@@ -148,144 +153,170 @@ class BybitClient:
             return None
 
     # === WEBSOCKET METHODS ===
-    def subscribe_public_price(self, symbol: str, callback):
-        """Підписка на ціни в реальному часі"""
-        self._price_callbacks.append(callback)
-
-        def handle_message(message):
-            if message.get('topic') == f'publicBybitTickersV5.{symbol}':
-                data = message.get('data', {})
-                price_data = {
-                    'symbol': symbol,
-                    'last_price': float(data.get('lastPrice', 0)),
-                    'bid_price': float(data.get('bid1Price', 0)),
-                    'ask_price': float(data.get('ask1Price', 0)),
-                    'timestamp': pd.Timestamp.now()
-                }
-                for cb in self._price_callbacks:
-                    try:
-                        cb(price_data)
-                    except Exception as e:
-                        logger.error(f"Price callback error: {e}")
-
-        self._ws_public = WebStream(
-            testnet=self.testnet,
-            channels=[f"tickers.{symbol}"],
-            callback=handle_message
-        )
-
-        logger.info(f"Subscribed to price updates for {symbol}")
-
-    def subscribe_candles(self, symbol: str, interval: str, callback):
-        """Підписка на свічкові дані"""
-        self._candle_callbacks.append(callback)
-
+    def subscribe_candles(self, symbol: str, interval: str, callback: Callable):
+        """Підписка на свічкові дані з автоматичним перепідключенням"""
         ws_interval = self.interval_map.get(interval, interval)
+        topic = f"kline.{ws_interval}.{symbol}"
 
-        def handle_message(message):
-            try:
-                if not message or not isinstance(message, dict):
-                    return
+        self._callbacks[topic].append(callback)
 
-                if 'topic' not in message:
-                    return
+        # Якщо вже є підписка на цей topic, не створюємо нову
+        if topic in self._ws_connections:
+            logger.debug(f"Already subscribed to {topic}")
+            return
 
-                if f'kline.{ws_interval}.{symbol}' in message.get('topic', ''):
-                    data_list = message.get('data', [])
-                    if not data_list or len(data_list) == 0:
-                        return
-
-                    data = data_list[0]
-                    if not data or not isinstance(data, dict):
-                        return
-
-                    start = data.get('start')
-                    if start is None:
-                        return
-
-                    candle = {
-                        'symbol': symbol,
-                        'timestamp': pd.to_datetime(int(start), unit='ms'),
-                        'open': float(data.get('open', 0)),
-                        'high': float(data.get('high', 0)),
-                        'low': float(data.get('low', 0)),
-                        'close': float(data.get('close', 0)),
-                        'volume': float(data.get('volume', 0)),
-                        'confirm': data.get('confirm', False)
-                    }
-
-                    if candle['confirm']:
-                        for cb in self._candle_callbacks:
-                            try:
-                                cb(candle)
-                            except Exception as e:
-                                logger.error(f"Candle callback error: {e}")
-            except Exception as e:
-                logger.error(f"WebSocket message error: {e}")
-
-        self._ws_public = WebStream(
-            testnet=self.testnet,
-            channels=[f"kline.{ws_interval}.{symbol}"],
-            callback=handle_message
-        )
-
+        # Запускаємо WebSocket в окремому потоці
+        self._start_websocket(topic)
         logger.info(f"Subscribed to {interval} candles for {symbol}")
 
-    def close(self):
-        """Закриття з'єднань"""
-        if self._ws_public:
-            self._ws_public.exit()
-        if self._ws_private:
-            self._ws_private.exit()
-        logger.info("WebSocket connections closed")
+    def _start_websocket(self, topic: str):
+        """Запуск WebSocket з'єднання в окремому потоці"""
 
+        def websocket_loop():
+            import websocket
+            import ssl
 
-# WebSocket клас
-class WebStream:
-    def __init__(self, testnet, channels, callback):
-        self.testnet = testnet
-        self.channels = channels
-        self.callback = callback
-        self._ws = None
-        self._connect()
+            ws_url = "wss://stream.bybit.com/v5/public/spot" if not self.testnet else "wss://stream-testnet.bybit.com/v5/public/spot"
 
-    def _connect(self):
-        import websocket
-        import threading
-        import json
+            reconnect_delay = self._reconnect_delay
 
-        ws_url = "wss://stream.bybit.com/v5/public/spot" if not self.testnet else "wss://stream-testnet.bybit.com/v5/public/spot"
+            while self._running:
+                try:
+                    # Налаштування WebSocket
+                    ws = websocket.WebSocketApp(
+                        ws_url,
+                        on_open=lambda ws: self._on_open(ws, topic),
+                        on_message=lambda ws, msg: self._on_message(ws, msg, topic),
+                        on_error=lambda ws, error: self._on_error(ws, error, topic),
+                        on_close=lambda ws, close_status_code, close_msg: self._on_close(ws, close_status_code,
+                                                                                         close_msg, topic)
+                    )
 
-        def on_message(ws, message):
+                    self._ws_connections[topic] = ws
+
+                    # Запуск з таймаутом
+                    wst = threading.Thread(target=ws.run_forever, kwargs={
+                        'ping_interval': 20,
+                        'ping_timeout': 10,
+                        'sslopt': {"cert_reqs": ssl.CERT_NONE}
+                    }, daemon=True)
+                    wst.start()
+                    self._ws_threads[topic] = wst
+
+                    # Чекаємо поки з'єднання встановиться
+                    time.sleep(2)
+
+                    # Якщо з'єднання закрилося - перепідключаємось
+                    while self._running and topic in self._ws_connections:
+                        time.sleep(1)
+
+                except Exception as e:
+                    logger.error(f"WebSocket error for {topic}: {e}")
+
+                if self._running:
+                    logger.info(f"Reconnecting {topic} in {reconnect_delay}s...")
+                    time.sleep(reconnect_delay)
+                    reconnect_delay = min(reconnect_delay * 1.5, self._max_reconnect_delay)
+
+            logger.info(f"WebSocket loop ended for {topic}")
+
+        thread = threading.Thread(target=websocket_loop, daemon=True)
+        thread.start()
+
+    def _on_open(self, ws, topic: str):
+        """Обробник відкриття WebSocket"""
+        subscribe_msg = {
+            "op": "subscribe",
+            "args": [topic]
+        }
+        ws.send(json.dumps(subscribe_msg))
+        logger.debug(f"WebSocket opened and subscribed to {topic}")
+
+    def _on_message(self, ws, message: str, topic: str):
+        """Обробник повідомлень WebSocket"""
+        try:
             data = json.loads(message)
-            self.callback(data)
 
-        def on_error(ws, error):
-            logger.error(f"WebSocket error: {error}")
+            # Перевіряємо чи це підтвердження підписки
+            if data.get('op') == 'subscribe':
+                logger.debug(f"Subscription confirmed for {topic}")
+                return
 
-        def on_close(ws, close_status_code, close_msg):
-            logger.warning("WebSocket closed, reconnecting in 5s...")
-            threading.Timer(5, self._connect).start()
+            # Перевіряємо чи це дані свічки
+            if 'topic' not in data or data.get('topic') != topic:
+                return
 
-        def on_open(ws):
-            subscribe_msg = {
-                "op": "subscribe",
-                "args": self.channels
+            result = data.get('data', [])
+            if not result:
+                return
+
+            # Bybit може повертати список або окремий об'єкт
+            if isinstance(result, list):
+                if not result:
+                    return
+                candle_data = result[0]
+            else:
+                candle_data = result
+
+            if not isinstance(candle_data, dict):
+                return
+
+            # Перевіряємо чи свічка підтверджена (закрита)
+            if not candle_data.get('confirm', False):
+                return
+
+            start = candle_data.get('start')
+            if start is None:
+                return
+
+            candle = {
+                'symbol': topic.split('.')[-1],
+                'timestamp': pd.to_datetime(int(start), unit='ms'),
+                'open': float(candle_data.get('open', 0)),
+                'high': float(candle_data.get('high', 0)),
+                'low': float(candle_data.get('low', 0)),
+                'close': float(candle_data.get('close', 0)),
+                'volume': float(candle_data.get('volume', 0)),
+                'confirm': True
             }
-            ws.send(json.dumps(subscribe_msg))
-            logger.info(f"WebSocket connected, subscribed to {self.channels}")
 
-        self._ws = websocket.WebSocketApp(
-            ws_url,
-            on_open=on_open,
-            on_message=on_message,
-            on_error=on_error,
-            on_close=on_close
-        )
+            # Викликаємо всі callback для цього topic
+            for callback in self._callbacks.get(topic, []):
+                try:
+                    callback(candle)
+                except Exception as e:
+                    logger.error(f"Callback error for {topic}: {e}")
 
-        wst = threading.Thread(target=self._ws.run_forever, daemon=True)
-        wst.start()
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON decode error: {e}")
+        except Exception as e:
+            logger.error(f"Message processing error: {e}")
 
-    def exit(self):
-        if self._ws:
-            self._ws.close()
+    def _on_error(self, ws, error, topic: str):
+        """Обробник помилок WebSocket"""
+        logger.error(f"WebSocket error for {topic}: {error}")
+
+    def _on_close(self, ws, close_status_code, close_msg, topic: str):
+        """Обробник закриття WebSocket"""
+        logger.warning(f"WebSocket closed for {topic}: {close_status_code} - {close_msg}")
+        # Видаляємо з'єднання, щоб воно перестворилося
+        if topic in self._ws_connections:
+            del self._ws_connections[topic]
+        if topic in self._ws_threads:
+            del self._ws_threads[topic]
+
+    def close(self):
+        """Закриття всіх з'єднань"""
+        logger.info("Closing all WebSocket connections...")
+        self._running = False
+
+        for topic, ws in list(self._ws_connections.items()):
+            try:
+                ws.close()
+            except:
+                pass
+
+        self._ws_connections.clear()
+        self._ws_threads.clear()
+        self._callbacks.clear()
+        logger.info("WebSocket connections closed")
