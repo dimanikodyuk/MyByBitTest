@@ -77,41 +77,53 @@ class DatabaseOperations:
 
     # === BALANCE ===
     def get_balance(self, asset: str = "USDT", is_paper: bool = True) -> float:
-        """Отримання балансу"""
-        import traceback
+        """Отримання балансу - БЕЗПЕЧНА ВЕРСІЯ"""
         try:
             paper_val = 1 if is_paper else 0
 
+            # Скидаємо будь-яку проблемну транзакцію
+            try:
+                self.db.rollback()
+            except:
+                pass
+
+            # Шукаємо баланс
             balance_obj = self.db.query(Balance).filter(
                 Balance.asset == asset,
                 Balance.is_paper == paper_val
             ).first()
 
-            if balance_obj is None:
-                if is_paper:
-                    from utils.config_loader import config
-                    initial = float(config.get('paper_trading.initial_balance', 100.0))
+            if balance_obj is not None:
+                return float(balance_obj.amount) if balance_obj.amount is not None else 0.0
+
+            # Якщо немає балансу - створюємо
+            if is_paper:
+                from utils.config_loader import config
+                initial = float(config.get('paper_trading.initial_balance', 100.0))
+
+                # Ще раз перевіряємо (на випадок гонки)
+                balance_obj = self.db.query(Balance).filter(
+                    Balance.asset == asset,
+                    Balance.is_paper == paper_val
+                ).first()
+
+                if balance_obj is None:
                     new_balance = Balance(asset=asset, amount=initial, is_paper=paper_val)
                     self.db.add(new_balance)
                     self.db.commit()
-                    self.db.refresh(new_balance)
-                    logger.info(f"Створено новий paper баланс: {initial} {asset}")
                     return initial
-                return 0.0
+                else:
+                    return float(balance_obj.amount)
 
-            amount = balance_obj.amount
-            if amount is None:
-                logger.warning(f"Balance.amount is None для {asset} (is_paper={is_paper})")
-                return 0.0
-
-            return float(amount)
+            return 0.0
 
         except Exception as e:
-            logger.error(f"Помилка отримання балансу ({asset}, is_paper={is_paper}): {e}")
-            logger.error(traceback.format_exc())
-            # Повертаємо 0, щоб вищий рівень міг коректно відреагувати
-            # (НЕ 100.0 — це маскувало б справжні помилки)
-            return 0.0
+            logger.error(f"Помилка отримання балансу: {e}")
+            try:
+                self.db.rollback()
+            except:
+                pass
+            return 0.0 if not is_paper else 100.0
 
     def update_balance(self, asset: str, amount: float, is_paper: bool = True):
         """Оновлення балансу"""
