@@ -10,10 +10,8 @@ from aiogram.enums import ParseMode
 from utils.config_loader import config
 from utils.logger import logger
 from core.paper_engine import PaperEngine
-from core.risk_manager import RiskManager
-from db.database import SessionLocal
-from db.operations import DatabaseOperations
 
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
 class TelegramBot:
     """Telegram бот для керування та моніторингу"""
@@ -33,30 +31,32 @@ class TelegramBot:
             logger.warning("Telegram token not configured")
             return
 
-        self.bot = Bot(token=self.token)
-        self.dispatcher = Dispatcher()
+        try:
+            self.bot = Bot(token=self.token)
+            self.dispatcher = Dispatcher()
 
-        # Реєстрація команд
-        self.dispatcher.message.register(self.cmd_start, Command("start"))
-        self.dispatcher.message.register(self.cmd_stop, Command("stop"))
-        self.dispatcher.message.register(self.cmd_status, Command("status"))
-        self.dispatcher.message.register(self.cmd_balance, Command("balance"))
-        self.dispatcher.message.register(self.cmd_trades, Command("trades"))
-        self.dispatcher.message.register(self.cmd_mode, Command("mode"))
-        self.dispatcher.message.register(self.cmd_reset, Command("reset"))
-        self.dispatcher.message.register(self.cmd_stats, Command("stats"))
-        self.dispatcher.message.register(self.cmd_help, Command("help"))
-        self.dispatcher.message.register(self.cmd_close_all, Command("close_all"))
+            # Реєстрація команд
+            self.dispatcher.message.register(self.cmd_start, Command("start"))
+            self.dispatcher.message.register(self.cmd_stop, Command("stop"))
+            self.dispatcher.message.register(self.cmd_status, Command("status"))
+            self.dispatcher.message.register(self.cmd_balance, Command("balance"))
+            self.dispatcher.message.register(self.cmd_trades, Command("trades"))
+            self.dispatcher.message.register(self.cmd_mode, Command("mode"))
+            self.dispatcher.message.register(self.cmd_reset, Command("reset"))
+            self.dispatcher.message.register(self.cmd_stats, Command("stats"))
+            self.dispatcher.message.register(self.cmd_help, Command("help"))
+            self.dispatcher.message.register(self.cmd_close_all, Command("close_all"))
 
-        self.running = True
+            self.running = True
 
-        # Запуск polling
-        asyncio.create_task(self._polling())
-        logger.info("Telegram bot started")
+            # Запуск polling
+            asyncio.create_task(self._polling())
+            logger.info("Telegram bot started")
 
-        # Відправка привітання
-        await self.send_message("🤖 *AutoTrading Bot Started*\n\nРежим: Paper Trading\nКоманди: /help",
-                                parse_mode=ParseMode.MARKDOWN)
+            # Відправка привітання
+            await self.send_message("🤖 AutoTrading Bot Started\n\nРежим: Paper Trading\nКоманди: /help")
+        except Exception as e:
+            logger.error(f"Failed to start Telegram bot: {e}")
 
     async def _polling(self):
         """Polling для отримання повідомлень"""
@@ -73,46 +73,38 @@ class TelegramBot:
         self.running = False
         logger.info("Telegram bot stopped")
 
-    async def send_message(self, text: str, parse_mode: ParseMode = None):
-        """Відправка повідомлення адміну"""
+    async def send_message(self, text: str):
+        """Відправка повідомлення адміну (без форматування)"""
         if not self.bot or not self.chat_id:
             return
 
-        # Розбиваємо довгі повідомлення на частини
         max_length = 4096
         if len(text) <= max_length:
             try:
                 await self.bot.send_message(
                     chat_id=self.chat_id,
                     text=text,
-                    parse_mode=parse_mode
-                )
-            except Exception as e:
-                # Якщо помилка форматування, пробуємо без parse_mode
-                logger.error(f"Failed to send with parse_mode: {e}")
-                await self.bot.send_message(
-                    chat_id=self.chat_id,
-                    text=text,
                     parse_mode=None
                 )
+            except Exception as e:
+                logger.error(f"Failed to send: {e}")
         else:
-            # Розбиваємо на частини
             for i in range(0, len(text), max_length):
                 part = text[i:i + max_length]
                 await self.bot.send_message(
                     chat_id=self.chat_id,
                     text=part,
-                    parse_mode=parse_mode
+                    parse_mode=None
                 )
-                await asyncio.sleep(0.1)  # Невелика затримка
+                await asyncio.sleep(0.1)
 
     async def send_trade_notification(self, trade_data: dict):
         """Сповіщення про відкриття угоди"""
         emoji = "🟢" if trade_data.get('side') == "BUY" else "🔴"
-        text = f"""{emoji} *NEW TRADE OPENED*
+        text = f"""{emoji} NEW TRADE OPENED
 
-Pair: `{trade_data.get('pair', 'N/A')}`
-Side: *{trade_data.get('side', 'N/A')}*
+Pair: {trade_data.get('pair', 'N/A')}
+Side: {trade_data.get('side', 'N/A')}
 Quantity: {trade_data.get('quantity', 0)}
 Entry Price: ${trade_data.get('entry_price', 0):.2f}
 TP: ${trade_data.get('tp', 0):.2f}
@@ -120,7 +112,7 @@ SL: ${trade_data.get('sl', 0):.2f}
 Balance: ${trade_data.get('balance', 0):.2f}
 Time: {datetime.now().strftime('%H:%M:%S')}"""
 
-        await self.send_message(text, parse_mode=ParseMode.MARKDOWN)
+        await self.send_message(text)
 
     async def send_close_notification(self, trade_data: dict):
         """Сповіщення про закриття угоди"""
@@ -128,9 +120,9 @@ Time: {datetime.now().strftime('%H:%M:%S')}"""
         emoji = "✅" if pnl > 0 else "❌"
         sign = "+" if pnl > 0 else ""
 
-        text = f"""{emoji} *TRADE CLOSED*
+        text = f"""{emoji} TRADE CLOSED
 
-Pair: `{trade_data.get('pair', 'N/A')}`
+Pair: {trade_data.get('pair', 'N/A')}
 Side: {trade_data.get('side', 'N/A')}
 Entry: ${trade_data.get('entry_price', 0):.2f}
 Exit: ${trade_data.get('exit_price', 0):.2f}
@@ -138,44 +130,28 @@ PnL: {sign}{pnl:.2f} USDT ({sign}{trade_data.get('pnl_percent', 0):.2f}%)
 Reason: {trade_data.get('reason', 'TP/SL')}
 Balance: ${trade_data.get('balance', 0):.2f}"""
 
-        await self.send_message(text, parse_mode=ParseMode.MARKDOWN)
+        await self.send_message(text)
 
     async def send_error(self, error_msg: str, error_type: str = "ERROR", traceback_info: str = None):
-        """Сповіщення про помилку з деталями - HTML версія"""
-        from aiogram.enums import ParseMode
-
+        """Сповіщення про помилку"""
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # Обмежуємо довжину
         max_len = 3500
         if len(error_msg) > max_len:
             error_msg = error_msg[:max_len] + "..."
 
-        if traceback_info and len(traceback_info) > max_len:
-            traceback_info = traceback_info[:max_len] + "..."
+        text = f"""🚨 ПОМИЛКА БОТА 🚨
 
-        # HTML екранування
-        def escape_html(text: str) -> str:
-            return (text.replace('&', '&amp;')
-                    .replace('<', '&lt;')
-                    .replace('>', '&gt;')
-                    .replace('"', '&quot;'))
+📅 Час: {current_time}
+⚠️ Тип: {error_type}
 
-        safe_error_msg = escape_html(error_msg)
-        safe_traceback = escape_html(traceback_info) if traceback_info else None
-        safe_error_type = escape_html(error_type)
+📝 Повідомлення:
+{error_msg}"""
 
-        text = f"<b>🚨 ПОМИЛКА БОТА</b> 🚨\n\n"
-        text += f"📅 Час: <code>{current_time}</code>\n"
-        text += f"⚠️ Тип: <code>{safe_error_type}</code>\n\n"
-        text += f"📝 Повідомлення:\n<pre>{safe_error_msg}</pre>"
+        if traceback_info and len(traceback_info) < 1000:
+            text += f"\n\n📚 Stack trace:\n{traceback_info[:500]}"
 
-        if safe_traceback:
-            text += f"\n\n📚 Stack trace:\n<pre>{safe_traceback}</pre>"
-
-        # Використовуємо HTML
-        await self.send_message(text, parse_mode=ParseMode.HTML)
-
+        await self.send_message(text)
 
     async def send_error_from_exception(self, exception: Exception, context: str = ""):
         """Відправка помилки з Exception об'єкта"""
@@ -185,23 +161,22 @@ Balance: ${trade_data.get('balance', 0):.2f}"""
             error_msg = f"[{context}] {error_msg}"
         await self.send_error(error_msg, type(exception).__name__, traceback_str)
 
-
     async def send_daily_report(self, stats: dict):
         """Щоденний звіт"""
-        text = f"""📊 *DAILY REPORT*
+        text = f"""📊 DAILY REPORT
 
-        Total Trades: {stats.get('total_trades', 0)}
-        Win Rate: {stats.get('win_rate', 0):.1f}%
-        Total PnL: {stats.get('total_pnl', 0):.2f} USDT
-        Best Trade: {stats.get('best_trade', 0):.2f}
-        Worst Trade: {stats.get('worst_trade', 0):.2f}
-        Current Balance: ${stats.get('balance', 0):.2f}
+Total Trades: {stats.get('total_trades', 0)}
+Win Rate: {stats.get('win_rate', 0):.1f}%
+Total PnL: {stats.get('total_pnl', 0):.2f} USDT
+Best Trade: {stats.get('best_trade', 0):.2f}
+Worst Trade: {stats.get('worst_trade', 0):.2f}
+Current Balance: ${stats.get('balance', 0):.2f}
 
-        Status: {'🟢 Active' if not stats.get('stopped') else '🔴 Stopped'}"""
+Status: {'🟢 Active' if not stats.get('stopped') else '🔴 Stopped'}"""
 
-        await self.send_message(text, parse_mode=ParseMode.MARKDOWN)
+        await self.send_message(text)
 
-        # === COMMAND HANDLERS ===
+    # === COMMAND HANDLERS ===
 
     async def cmd_start(self, message: types.Message):
         """/start - запуск торгівлі"""
@@ -209,7 +184,7 @@ Balance: ${trade_data.get('balance', 0):.2f}"""
             if self.order_manager:
                 self.order_manager.running = True
                 balance = self.order_manager.db.get_balance("USDT", True)
-                await message.reply(f"✅ Trading started\n\nРежим: Paper Trading\nБаланс: ${balance}")
+                await message.reply(f"✅ Trading started\n\nРежим: Paper Trading\nБаланс: ${balance:.2f}")
             else:
                 await message.reply("✅ Bot is running\n\nUse /help for commands")
         except Exception as e:
@@ -223,7 +198,6 @@ Balance: ${trade_data.get('balance', 0):.2f}"""
                 self.order_manager.running = False
                 await message.reply("🛑 Emergency stop activated\n\nAll trading halted")
 
-                # Закриваємо всі відкриті позиції
                 open_trades = self.order_manager.db.get_open_trades(is_paper=True)
                 if open_trades:
                     await message.reply(f"⚠️ {len(open_trades)} positions are still open\nUse /close_all to close them")
@@ -247,7 +221,6 @@ Balance: ${trade_data.get('balance', 0):.2f}"""
 
             await message.reply(f"Closing {len(open_trades)} positions...")
 
-            # Отримуємо поточну ціну для кожної пари
             closed_count = 0
             for trade in open_trades:
                 try:
@@ -279,20 +252,20 @@ Balance: ${trade_data.get('balance', 0):.2f}"""
             risk_mgr = self.order_manager.risk_manager
             daily_stats = risk_mgr.get_daily_stats()
 
-            text = f"""📊 *BOT STATUS*
+            text = f"""📊 BOT STATUS
 
-        Mode: `Paper Trading`
-        Status: {'🟢 RUNNING' if self.order_manager.running else '🔴 STOPPED'}
+Mode: Paper Trading
+Status: {'RUNNING' if self.order_manager.running else 'STOPPED'}
 
-        💰 Balance: ${balance:.2f}
-        📈 Open Trades: {open_trades}/{self.order_manager.risk_manager.max_open_trades}
-        📉 Daily PnL: {daily_stats['daily_pnl']:.2f} USDT ({daily_stats['daily_pnl_percent']:.1f}%)
-        🎯 Daily Limit: {daily_stats['daily_limit']}%
-        ⚠️ Limit Reached: {'Yes' if daily_stats['limit_reached'] else 'No'}
+💰 Balance: ${balance:.2f}
+📈 Open Trades: {open_trades}/{self.order_manager.risk_manager.max_open_trades}
+📉 Daily PnL: {daily_stats['daily_pnl']:.2f} USDT ({daily_stats['daily_pnl_percent']:.1f}%)
+🎯 Daily Limit: {daily_stats['daily_limit']}%
+⚠️ Limit Reached: {'Yes' if daily_stats['limit_reached'] else 'No'}
 
-        🔄 Last Update: {datetime.now().strftime('%H:%M:%S')}"""
+🔄 Last Update: {datetime.now().strftime('%H:%M:%S')}"""
 
-            await message.reply(text, parse_mode=ParseMode.MARKDOWN)
+            await message.reply(text)
         except Exception as e:
             await self.send_error_from_exception(e, "cmd_status")
             await message.reply("❌ Помилка при отриманні статусу")
@@ -306,22 +279,20 @@ Balance: ${trade_data.get('balance', 0):.2f}"""
 
             db = self.order_manager.db
             balance = db.get_balance("USDT", True)
-
-            # Отримуємо статистику
             stats = db.get_stats(is_paper=True)
 
-            text = f"""💰 *PAPER BALANCE*
+            text = f"""💰 PAPER BALANCE
 
-        Current Balance: `${balance:.2f}`
-        Total PnL: `${stats['total_pnl']:.2f}`
-        Total Trades: {stats['total_trades']}
-        Win Rate: {stats['win_rate']:.1f}%
+Current Balance: ${balance:.2f}
+Total PnL: ${stats['total_pnl']:.2f}
+Total Trades: {stats['total_trades']}
+Win Rate: {stats['win_rate']:.1f}%
 
-        Commands:
-        /reset - Reset to $100
-        /close_all - Close all positions"""
+Commands:
+/reset - Reset to $100
+/close_all - Close all positions"""
 
-            await message.reply(text, parse_mode=ParseMode.MARKDOWN)
+            await message.reply(text)
         except Exception as e:
             await self.send_error_from_exception(e, "cmd_balance")
             await message.reply("❌ Помилка при отриманні балансу")
@@ -340,7 +311,7 @@ Balance: ${trade_data.get('balance', 0):.2f}"""
                 await message.reply("No trades yet")
                 return
 
-            text = "📜 *LAST 10 TRADES*\n\n"
+            text = "📜 LAST 10 TRADES\n\n"
             for trade in trades[:5]:
                 emoji = "✅" if trade.pnl > 0 else "❌" if trade.pnl < 0 else "⚪"
                 sign = "+" if trade.pnl > 0 else ""
@@ -350,9 +321,9 @@ Balance: ${trade_data.get('balance', 0):.2f}"""
                 text += f"   {trade.opened_at.strftime('%H:%M %d/%m')}\n\n"
 
             if len(trades) > 5:
-                text += f"_...and {len(trades) - 5} more_"
+                text += f"...and {len(trades) - 5} more"
 
-            await message.reply(text, parse_mode=ParseMode.MARKDOWN)
+            await message.reply(text)
         except Exception as e:
             await self.send_error_from_exception(e, "cmd_trades")
             await message.reply("❌ Помилка при отриманні історії угод")
@@ -361,17 +332,17 @@ Balance: ${trade_data.get('balance', 0):.2f}"""
         """/mode - поточний режим"""
         try:
             current_mode = config.bot_mode
-            text = f"""⚙️ *TRADING MODE*
+            text = f"""⚙️ TRADING MODE
 
-        Current Mode: **{current_mode.upper()}**
+Current Mode: {current_mode.upper()}
 
-        Available modes:
-        - paper (Paper Trading - Virtual)
-        - real (Real Trading - Requires API)
+Available modes:
+- paper (Paper Trading - Virtual)
+- real (Real Trading - Requires API)
 
-        To switch mode, edit .env file and restart bot"""
+To switch mode, edit .env file and restart bot"""
 
-            await message.reply(text, parse_mode=ParseMode.MARKDOWN)
+            await message.reply(text)
         except Exception as e:
             await self.send_error_from_exception(e, "cmd_mode")
             await message.reply("❌ Помилка при отриманні режиму")
@@ -383,7 +354,6 @@ Balance: ${trade_data.get('balance', 0):.2f}"""
                 await message.reply("Bot not initialized")
                 return
 
-            # Закриваємо всі відкриті позиції
             open_trades = self.order_manager.db.get_open_trades(is_paper=True)
             for trade in open_trades:
                 try:
@@ -393,13 +363,15 @@ Balance: ${trade_data.get('balance', 0):.2f}"""
                 except Exception as e:
                     await self.send_error_from_exception(e, f"reset_close_trade_{trade.id}")
 
-            # Скидаємо баланс
             self.order_manager.paper_engine.reset()
-
             await message.reply("✅ Paper trading reset to $100\nAll positions closed")
         except Exception as e:
             await self.send_error_from_exception(e, "cmd_reset")
             await message.reply("❌ Помилка при скиданні")
+
+    async def cmd_ping(self, message: types.Message):
+        """Перевірка, чи бот працює"""
+        await message.reply("🏓 Pong! Bot is alive")
 
     async def cmd_stats(self, message: types.Message):
         """/stats - детальна статистика"""
@@ -412,45 +384,34 @@ Balance: ${trade_data.get('balance', 0):.2f}"""
             stats = db.get_stats(is_paper=True)
             daily = self.order_manager.risk_manager.get_daily_stats()
 
-            text = f"""📈 *TRADING STATISTICS*
+            text = f"""📈 TRADING STATISTICS
 
-        *All Time:*
-        Total Trades: {stats['total_trades']}
-        Win Rate: {stats['win_rate']:.1f}%
-        Total PnL: ${stats['total_pnl']:.2f}
-        Avg PnL: ${stats['avg_pnl']:.2f}
-        Max Drawdown: ${stats['max_drawdown']:.2f}
+All Time:
+Total Trades: {stats['total_trades']}
+Win Rate: {stats['win_rate']:.1f}%
+Total PnL: ${stats['total_pnl']:.2f}
+Avg PnL: ${stats['avg_pnl']:.2f}
+Max Drawdown: ${stats['max_drawdown']:.2f}
 
-        *Today:*
-        Daily PnL: ${daily['daily_pnl']:.2f}
-        Daily PnL %: {daily['daily_pnl_percent']:.1f}%
-        Open Positions: {daily['open_trades']}
-        Daily Limit: {daily['daily_limit']}%"""
+Today:
+Daily PnL: ${daily['daily_pnl']:.2f}
+Daily PnL %: {daily['daily_pnl_percent']:.1f}%
+Open Positions: {daily['open_trades']}
+Daily Limit: {daily['daily_limit']}%"""
 
-            await message.reply(text, parse_mode=ParseMode.MARKDOWN)
+            await message.reply(text)
         except Exception as e:
             await self.send_error_from_exception(e, "cmd_stats")
             await message.reply("❌ Помилка при отриманні статистики")
 
     async def cmd_help(self, message: types.Message):
-        """/help - список команд"""
-        text = """🤖 *AVAILABLE COMMANDS*
-
-        /start - Start trading
-        /stop - Emergency stop
-        /status - Bot status
-        /balance - Current balance
-        /trades - Trade history
-        /mode - Current mode
-        /reset - Reset paper balance
-        /stats - Trading statistics
-        /close_all - Close all positions
-        /help - This message
-
-        *Auto Notifications:*
-        - New trade opened
-        - Trade closed
-        - Daily report
-        - Errors (full stack trace)"""
-
-        await message.reply(text, parse_mode=ParseMode.MARKDOWN)
+        keyboard = ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="/status"), KeyboardButton(text="/balance")],
+                [KeyboardButton(text="/trades"), KeyboardButton(text="/stats")],
+                [KeyboardButton(text="/reset"), KeyboardButton(text="/close_all")],
+                [KeyboardButton(text="/start"), KeyboardButton(text="/stop")],
+            ],
+            resize_keyboard=True
+        )
+        await message.reply("🤖 AVAILABLE COMMANDS\n\nTap any button:", reply_markup=keyboard)

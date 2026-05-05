@@ -62,6 +62,7 @@ class DatabaseOperations:
         try:
             paper_val = 1 if is_paper else 0
 
+            # Спрощений запит без функцій
             balance_obj = self.db.query(Balance).filter(
                 Balance.asset == asset,
                 Balance.is_paper == paper_val
@@ -76,10 +77,15 @@ class DatabaseOperations:
                     return 100.0
                 return 0.0
 
-            return balance_obj.amount if balance_obj.amount is not None else 0.0
+            # Перевіряємо чи amount не None
+            if balance_obj.amount is None:
+                return 0.0
+
+            return float(balance_obj.amount)
 
         except Exception as e:
             logger.error(f"Помилка отримання балансу: {e}")
+            # У випадку помилки повертаємо безпечне значення
             return 100.0 if is_paper else 0.0
 
     def update_balance(self, asset: str, amount: float, is_paper: bool = True):

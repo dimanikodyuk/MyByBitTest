@@ -26,6 +26,11 @@ class RiskManager:
         if self.daily_loss_reached:
             return False, "Daily loss limit reached"
 
+        # ПЕРЕВІРКА: чи вже є відкрита позиція по цій парі
+        existing_trades = self.db.get_open_trades(pair=pair, is_paper=self.is_paper)
+        if existing_trades:
+            return False, f"Вже є відкрита позиція по {pair}"
+
         # Перевірка кількості відкритих угод
         open_trades = self.db.get_open_trades(pair=None, is_paper=self.is_paper)
         if len(open_trades) >= self.max_open_trades:
@@ -68,13 +73,20 @@ class RiskManager:
         if quantity < min_qty:
             quantity = min_qty
 
-        quantity = round(quantity, 3)
+        quantity = round(quantity, 6)  # Збільшимо точність
 
         # Перевірка балансу
         required_balance = quantity * entry_price
         if required_balance > balance:
             quantity = balance / entry_price
-            quantity = round(quantity, 3)
+            quantity = round(quantity, 6)
+
+        # Максимальний розмір позиції - не більше 25% балансу
+        max_position_value = balance * 0.25
+        max_quantity = max_position_value / entry_price
+        if quantity > max_quantity:
+            quantity = max_quantity
+            quantity = round(quantity, 6)
 
         logger.debug(f"📐 Розмір позиції: {quantity} (ризик={self.risk_per_trade}%, баланс={balance:.2f})")
         return quantity
@@ -100,16 +112,13 @@ class RiskManager:
             "open_trades": len(self.db.get_open_trades(is_paper=self.is_paper))
         }
 
-    # Додати в клас RiskManager
     def calculate_kelly_position(self, balance: float, entry_price: float, stop_loss_price: float) -> float:
         """Розрахунок розміру позиції за Kelly Criterion"""
         stats = self.db.get_stats(is_paper=self.is_paper)
 
         if stats['total_trades'] < config.get('risk.kelly_window', 50):
-            # Якщо недостатньо даних, використовуємо стандартний розрахунок
             return self.calculate_position_size(balance, entry_price, stop_loss_price)
 
-        # Отримуємо середній прибуток/збиток
         trades = self.db.get_trades_history(limit=config.get('risk.kelly_window', 50), is_paper=self.is_paper)
 
         wins = [t.pnl for t in trades if t.pnl > 0]
@@ -122,7 +131,6 @@ class RiskManager:
         avg_win = sum(wins) / len(wins)
         avg_loss = sum(losses) / len(losses)
 
-        # Kelly Formula
         if avg_loss == 0:
             return 0.1 * balance / entry_price
 
@@ -131,12 +139,9 @@ class RiskManager:
         q = 1 - p
 
         kelly = (p * b - q) / b
-
-        # Обмежуємо від 0 до 0.25 (25% від балансу)
         kelly = max(0, min(kelly, 0.25))
 
-        # Розмір позиції
         position_value = balance * kelly
         quantity = position_value / entry_price
 
-        return round(quantity, 3)
+        return round(quantity, 6)

@@ -9,10 +9,10 @@ import signal
 import sys
 import threading
 from pathlib import Path
-
+import traceback
 # Додавання кореневої директорії до шляху
 sys.path.insert(0, str(Path(__file__).parent))
-
+from datetime import datetime
 from utils.logger import logger
 from utils.config_loader import config
 from db.database import init_db, SessionLocal
@@ -87,8 +87,17 @@ class AutoTradingBot:
             "✅ *AutoTrading Bot Initialized*\n\n"
             "Paper Trading Mode Active\n"
             "Web UI: http://localhost:8000\n"
-            "Monitoring: " + ", ".join(config.get('trading.pairs', ['BTCUSDT'])),
-            parse_mode="Markdown")
+            "Monitoring: " + ", ".join(config.get('trading.pairs', ['BTCUSDT'])))
+
+    async def send_restart_notification(self):
+        """Сповіщення про перезапуск бота"""
+        if self.telegram_bot:
+            await self.telegram_bot.send_message(
+                "🔄 *Bot Restarted*\n\n"
+                f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                "Status: Online",
+                parse_mode="Markdown"
+            )
 
     def _start_web_interface(self):
         """Запуск веб-інтерфейсу в окремому потоці"""
@@ -126,6 +135,12 @@ class AutoTradingBot:
             self.exchange.subscribe_candles(pair, timeframe, on_candle)
             logger.info(f"Підписка на {pair} {timeframe} свічки")
             await asyncio.sleep(0.5)
+
+    def global_exception_handler(exc_type, exc_value, exc_traceback):
+        logger.error("Unhandled exception", exc_info=(exc_type, exc_value, exc_traceback))
+        # Тут можна додати відправку в Telegram
+
+    sys.excepthook = global_exception_handler
 
     async def run(self):
         """Запуск бота"""

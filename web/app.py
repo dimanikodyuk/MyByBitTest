@@ -263,6 +263,75 @@ async def health_check():
     }
 
 
+# ============ УПРАВЛІННЯ ТОРГОВИМИ ПАРАМИ ============
+
+AVAILABLE_PAIRS = [
+    "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
+    "DOGEUSDT", "ADAUSDT", "AVAXUSDT", "DOTUSDT", "LINKUSDT",
+    "MATICUSDT", "UNIUSDT", "ATOMUSDT", "LTCUSDT", "ETCUSDT"
+]
+
+
+@app.get("/api/trading_pairs")
+async def get_trading_pairs():
+    """Отримання поточного списку торгових пар"""
+    current_pairs = config.get('trading.pairs', ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'])
+    return {
+        "current_pairs": current_pairs,
+        "available_pairs": AVAILABLE_PAIRS
+    }
+
+
+@app.post("/api/trading_pairs")
+async def update_trading_pairs(data: Dict[str, Any]):
+    """Оновлення списку торгових пар"""
+    import yaml
+    from pathlib import Path
+
+    new_pairs = data.get('pairs', [])
+
+    # Валідація
+    if not new_pairs:
+        raise HTTPException(status_code=400, detail="Список пар не може бути порожнім")
+
+    for pair in new_pairs:
+        if pair not in AVAILABLE_PAIRS:
+            raise HTTPException(status_code=400, detail=f"Невідома пара: {pair}")
+
+    config_path = Path(__file__).parent.parent / "config.yaml"
+
+    try:
+        # Читаємо поточний конфіг
+        with open(config_path, 'r', encoding='utf-8') as f:
+            current_config = yaml.safe_load(f)
+
+        # Оновлюємо пари
+        if 'trading' not in current_config:
+            current_config['trading'] = {}
+        current_config['trading']['pairs'] = new_pairs
+
+        # Зберігаємо конфіг
+        with open(config_path, 'w', encoding='utf-8') as f:
+            yaml.dump(current_config, f, allow_unicode=True, default_flow_style=False)
+
+        # Оновлюємо глобальний конфіг
+        from utils.config_loader import reload_config
+        reload_config()
+
+        # Оновлюємо пари в order_manager
+        if order_manager_ref:
+            order_manager_ref.pairs = new_pairs
+            # Переініціалізуємо стратегії для нових пар
+            order_manager_ref._init_strategies()
+            order_manager_ref._load_initial_data()
+            logger.info(f"Торгові пари оновлено: {new_pairs}")
+
+        return {"status": "success", "pairs": new_pairs}
+
+    except Exception as e:
+        logger.error(f"Помилка оновлення пар: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/settings/testing")
 async def update_testing_settings(settings: Dict[str, Any]):
     """Оновлення testing налаштувань"""
@@ -297,6 +366,73 @@ async def update_testing_settings(settings: Dict[str, Any]):
         logger.error(f"Помилка збереження testing налаштувань: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.get("/api/chart/equity")
+async def get_equity_chart():
+    """Графік зміни балансу (Equity Curve)"""
+    db = SessionLocal()
+    db_ops = DatabaseOperations(db)
+    try:
+        trades = db_ops.get_trades_history(limit=1000, is_paper=True)
+
+        equity_points = []
+        balance = 100.0
+
+        equity_points.append({"time": datetime.now() - timedelta(days=30), "balance": balance, "pnl": 0, "pair": "Start"})
+
+        for trade in sorted(trades, key=lambda x: x.closed_at if x.closed_at else x.opened_at):
+            if trade.closed_at:
+                balance += trade.pnl
+                equity_points.append({
+                    "time": trade.closed_at,
+                    "balance": balance,
+                    "pnl": trade.pnl,
+                    "pair": trade.pair
+                })
+
+        if len(equity_points) <= 1:
+            fig = go.Figure()
+            fig.update_layout(title="Немає даних для Equity Curve", template="plotly_dark", height=400)
+            return JSONResponse(content=json.loads(json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)))
+
+        fig = go.Figure()
+
+        # Створюємо список кольорів для маркерів
+        marker_colors = []
+        for p in equity_points[1:]:
+            marker_colors.append('#00ff88' if p.get('pnl', 0) > 0 else '#ff4757')
+
+        fig.add_trace(go.Scatter(
+            x=[p["time"] for p in equity_points],
+            y=[p["balance"] for p in equity_points],
+            mode='lines+markers',
+            name='Equity',
+            line=dict(color='#00d4ff', width=2),
+            marker=dict(size=6, color=marker_colors),
+            text=[f"Balance: ${p['balance']:.2f}<br>PnL: ${p.get('pnl', 0):.2f}<br>Pair: {p.get('pair', 'Start')}" for p in equity_points],
+            hoverinfo='text'
+        ))
+
+        fig.add_hline(y=100, line_dash="dash", line_color="#888", annotation_text="Initial Balance")
+
+        fig.update_layout(
+            title="Equity Curve (Баланс у часі)",
+            xaxis_title="Дата",
+            yaxis_title="Баланс (USDT)",
+            template="plotly_dark",
+            height=400,
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(26,26,46,0.5)'
+        )
+
+        return JSONResponse(content=json.loads(json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)))
+    except Exception as e:
+        logger.error(f"Помилка створення графіку equity: {e}")
+        fig = go.Figure()
+        fig.update_layout(title=f"Помилка: {str(e)[:100]}", template="plotly_dark", height=400)
+        return JSONResponse(content=json.loads(json.dumps(fig, cls=plotly.utils.PlotlyJSONEncoder)))
+    finally:
+        db.close()
 
 @app.get("/api/trade/chart/{trade_id}")
 async def get_trade_chart(trade_id: int, timeframe: str = "1h"):
@@ -472,6 +608,31 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         if websocket in active_websockets:
             active_websockets.remove(websocket)
+
+
+# @app.get("/api/patterns/{pair}")
+# async def get_candle_patterns(pair: str, timeframe: str = "1h"):
+#     """Отримання свічкових патернів для пари"""
+#     from exchange.bybit_client import BybitClient
+#     exchange = BybitClient()
+#
+#     df = exchange.get_klines(pair, timeframe, limit=100)
+#     if df is None or df.empty:
+#         return {"error": "No data"}
+#
+#     # Розрахунок індикаторів та патернів
+#     from core.strategy import TradingStrategy
+#     strategy = TradingStrategy(pair)
+#     df = strategy.calculate_indicators(df)
+#     patterns = strategy.detect_candle_patterns(df)
+#
+#     return {
+#         "pair": pair,
+#         "timeframe": timeframe,
+#         "current_price": float(df['close'].iloc[-1]),
+#         "patterns": patterns,
+#         "timestamp": datetime.now().isoformat()
+#     }
 
 @app.get("/api/current_price/{pair}")
 async def get_current_price(pair: str):
@@ -1565,11 +1726,13 @@ async def root():
     
     <!-- Відкриті позиції -->
     <div class="card">
-        <div class="card-header"><h3>📈 Відкриті позиції</h3></div>
+        <div class="card-header"><h3>📈 Відкриті позиції</h3> <button class="btn btn-danger" onclick="closeAllTrades()">🔴 Закрити всі позиції</button> </div>
+        
         <div class="table-wrapper">
             <table style="width:100%; border-collapse: collapse;">
                 <thead>
                     <tr style="background: rgba(15,20,40,0.6);">
+                        <th style="padding: 12px;">Trailing SL</th>
                         <th style="padding: 12px;">Пара</th>
                         <th style="padding: 12px;">Сторона</th>
                         <th style="padding: 12px;">Вхід</th>
@@ -1739,7 +1902,8 @@ async def root():
             
             <div class="card"><div class="card-header"><h3>📊 Графік</h3><div style="display:flex;gap:10px;"><select id="chartPair" style="background:#1a1a2e;border:1px solid #667eea;border-radius:10px;padding:8px;color:white;"><option value="BTCUSDT">BTCUSDT</option><option value="ETHUSDT">ETHUSDT</option><option value="SOLUSDT">SOLUSDT</option></select><select id="chartTimeframe" style="background:#1a1a2e;border:1px solid #667eea;border-radius:10px;padding:8px;color:white;"><option value="15m">15 хвилин<option value="1h">1 година</option><option value="4h">4 години</option><option value="1d">1 день</option></select><button class="btn btn-primary btn-sm" onclick="loadChart()">Оновити</button><button class="btn btn-outline btn-sm" onclick="resetChartView()">⟳ Скинути масштаб</button></div></div><div class="chart-container" id="priceChart"></div></div>
             <div class="card"><div class="card-header"><h3>📈 PnL динаміка</h3></div><div class="chart-container" id="pnlChart"></div></div>
-            
+            <div class="card"><div class="card-header"><h3>📈 Equity Curve (Баланс)</h3></div><div class="chart-container" id="equityChart"></div></div>
+
         </div>
 
         <!-- ПОКРАЩЕНА АНАЛІТИКА -->
@@ -1778,6 +1942,20 @@ async def root():
                             <option value="1d">1 день</option>
                         </select>
                         <small style="color:#666;">Період для розрахунку індикаторів</small>
+                    </div>
+                    
+                    <!-- Замість grid з чекбоксами -->
+                    <div style="padding: 15px;">
+                        <div class="form-group">
+                            <label>📊 Виберіть торгові пари</label>
+                            <select id="tradingPairsSelect" multiple size="8" style="width: 100%; height: 200px;">
+                                <!-- Динамічне заповнення -->
+                            </select>
+                            <small style="color:#666;">Утримуйте Ctrl (Cmd) для вибору кількох пар</small>
+                        </div>
+                        <div style="margin-top: 15px; font-size: 12px; color: #888;">
+                            ⚠️ Зміна пар перезавантажить стратегії. Відкриті позиції залишаться активними.
+                        </div>
                     </div>
                     
                     <div class="form-group" title="Автоматичне створення угод на основі прогнозів (для тестування)">
@@ -2135,6 +2313,100 @@ async def root():
             }
         }
     }
+    
+    // ============ ТОРГОВІ ПАРИ ============
+async function loadTradingPairs() {
+    try {
+        const res = await fetch('/api/trading_pairs');
+        const data = await res.json();
+        
+        const select = document.getElementById('tradingPairsSelect');
+        if (!select) return;
+        
+        select.innerHTML = data.available_pairs.map(pair => {
+            const isSelected = data.current_pairs.includes(pair);
+            return `<option value="${pair}" ${isSelected ? 'selected' : ''}>${pair}</option>`;
+        }).join('');
+        
+        window.selectedPairs = [...data.current_pairs];
+    } catch(e) {
+        console.error('Помилка завантаження пар:', e);
+    }
+}
+
+function updatePairsSelection() {
+    const select = document.getElementById('tradingPairsSelect');
+    if (!select) return;
+    
+    window.selectedPairs = Array.from(select.selectedOptions).map(opt => opt.value);
+    
+    const btn = document.querySelector('#pairsList')?.closest('.card')?.querySelector('.btn-primary');
+    if (btn) {
+        btn.innerText = `💾 Зберегти пари (${window.selectedPairs.length})`;
+    }
+}
+
+async function loadEquityChart() {
+    try {
+        const res = await fetch('/api/chart/equity');
+        const data = await res.json();
+        Plotly.newPlot('equityChart', data.data, data.layout || {}, { responsive: true });
+    } catch(e) {
+        console.error('Помилка завантаження equity графіку:', e);
+    }
+}
+
+
+
+async function saveTradingPairs() {
+    if (!window.selectedPairs || window.selectedPairs.length === 0) {
+        alert('Виберіть хоча б одну пару для торгівлі!');
+        return;
+    }
+    
+    try {
+        const res = await fetch('/api/trading_pairs', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pairs: window.selectedPairs })
+        });
+        
+        const data = await res.json();
+        
+        if (data.status === 'success') {
+            alert(`✅ Торгові пари оновлено: ${data.pairs.join(', ')}`);
+            // Оновлюємо випадаючі списки в інших вкладках
+            updatePairsSelectors();
+        } else {
+            alert('❌ Помилка: ' + (data.detail || 'Невідома помилка'));
+        }
+    } catch(e) {
+        console.error('Помилка збереження пар:', e);
+        alert('❌ Помилка збереження: ' + e.message);
+    }
+}
+
+document.getElementById('tradingPairsSelect')?.addEventListener('change', updatePairsSelection);
+
+function updatePairsSelectors() {
+    // Оновлюємо select для аналізу та графіків
+    const analysisSelect = document.getElementById('analysisPair');
+    const chartSelect = document.getElementById('chartPair');
+    
+    if (analysisSelect && window.selectedPairs) {
+        const currentValue = analysisSelect.value;
+        analysisSelect.innerHTML = window.selectedPairs.map(p => 
+            `<option value="${p}" ${p === currentValue ? 'selected' : ''}>${p}</option>`
+        ).join('');
+    }
+    
+    if (chartSelect && window.selectedPairs) {
+        const currentValue = chartSelect.value;
+        chartSelect.innerHTML = window.selectedPairs.map(p => 
+            `<option value="${p}" ${p === currentValue ? 'selected' : ''}>${p}</option>`
+        ).join('');
+    }
+}
 
     // ============ ОСНОВНІ ФУНКЦІЇ ============
     async function enableNotifications() {
@@ -2291,26 +2563,27 @@ async def root():
                 }
                 
                 openBody.innerHTML = openTrades.map(t => {
-                    const currentPrice = currentPrices[t.pair] || t.entry_price;
-                    let currentPnl = 0, currentPnlPercent = 0;
-                    if (t.side === 'BUY') {
-                        currentPnl = (currentPrice - t.entry_price) * t.quantity;
-                        currentPnlPercent = ((currentPrice - t.entry_price) / t.entry_price) * 100;
-                    } else {
-                        currentPnl = (t.entry_price - currentPrice) * t.quantity;
-                        currentPnlPercent = ((t.entry_price - currentPrice) / t.entry_price) * 100;
-                    }
-                    return `<tr style="cursor:pointer;" onclick="showTradeOnChart(${t.id}, '${t.pair}', ${t.entry_price}, '${t.side}', null)">
-                        <td style="padding: 12px;">${t.pair}</td>
-                        <td style="padding: 12px;"><span class="badge ${t.side === 'BUY' ? 'badge-buy' : 'badge-sell'}">${t.side === 'BUY' ? 'LONG' : 'SHORT'}</span></td>
-                        <td style="padding: 12px;">$${t.entry_price.toFixed(0)}</td>
-                        <td style="padding: 12px;">${t.quantity}</td>
-                        <td style="padding: 12px;">$${t.take_profit?.toFixed(0) || '-'}</td>
-                        <td style="padding: 12px;">$${t.stop_loss?.toFixed(0) || '-'}</td>
-                        <td style="padding: 12px;" class="${currentPnl >= 0 ? 'positive' : 'negative'}">${currentPnl >= 0 ? '+' : ''}$${currentPnl.toFixed(2)} (${currentPnlPercent.toFixed(1)}%)</td>
-                        <td style="padding: 12px;"><button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); closeTrade(${t.id})">🔴 Закрити</button></td>
-                    </tr>`;
-                }).join('');
+    const currentPrice = currentPrices[t.pair] || t.entry_price;
+    let currentPnl = 0, currentPnlPercent = 0;
+    if (t.side === 'BUY') {
+        currentPnl = (currentPrice - t.entry_price) * t.quantity;
+        currentPnlPercent = ((currentPrice - t.entry_price) / t.entry_price) * 100;
+    } else {
+        currentPnl = (t.entry_price - currentPrice) * t.quantity;
+        currentPnlPercent = ((t.entry_price - currentPrice) / t.entry_price) * 100;
+    }
+    return `<tr style="cursor:pointer;" onclick="showTradeOnChart(${t.id}, '${t.pair}', ${t.entry_price}, '${t.side}', null)">
+        <td style="padding: 12px;">$${t.stop_loss?.toFixed(0) || '-'}</td>
+        <td style="padding: 12px;">${t.pair}</td>
+        <td style="padding: 12px;"><span class="badge ${t.side === 'BUY' ? 'badge-buy' : 'badge-sell'}">${t.side === 'BUY' ? 'LONG' : 'SHORT'}</span></td>
+        <td style="padding: 12px;">$${t.entry_price.toFixed(0)}</td>
+        <td style="padding: 12px;">${t.quantity}</td>
+        <td style="padding: 12px;">$${t.take_profit?.toFixed(0) || '-'}</td>
+        <td style="padding: 12px;">$${t.stop_loss?.toFixed(0) || '-'}</td>
+        <td style="padding: 12px;" class="${currentPnl >= 0 ? 'positive' : 'negative'}">${currentPnl >= 0 ? '+' : ''}$${currentPnl.toFixed(2)} (${currentPnlPercent.toFixed(1)}%)</td>
+        <td style="padding: 12px;"><button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); closeTrade(${t.id})">🔴 Закрити</button></td>
+    </tr>`;
+}).join('');
             } else {
                 openBody.innerHTML = '<tr><td colspan="8" style="text-align: center;">Немає відкритих позицій</td></tr>';
             }
@@ -2338,6 +2611,25 @@ async def root():
 }
 
        
+    async function closeAllTrades() {
+    if (!confirm("Закрити ВСІ відкриті позиції?")) return;
+    
+    const res = await fetch('/api/open_trades');
+    const trades = await res.json();
+    
+    let closed = 0;
+    for (const trade of trades) {
+        const currentPrice = await getCurrentPrice(trade.pair);
+        const closeRes = await fetch(`/api/trade/close/${trade.id}?price=${currentPrice}`, { 
+            method: 'POST' 
+        });
+        const data = await closeRes.json();
+        if (data.pnl !== undefined) closed++;
+    }
+    
+    alert(`Закрито ${closed} позицій`);
+    loadDashboard();
+}
 
     async function closeTrade(tradeId) {
         if (confirm(`Закрити угоду ${tradeId} за поточною ціною?`)) {
@@ -2604,7 +2896,7 @@ async def root():
             btn.classList.add('active');
             document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
             document.getElementById(`tab-${btn.dataset.tab}`).classList.add('active');
-            if (btn.dataset.tab === 'charts') { loadChart(); loadPnlChart(); }
+            if (btn.dataset.tab === 'charts') { loadChart(); loadPnlChart(); loadEquityChart();}
             if (btn.dataset.tab === 'logs') loadLogs(true);
             if (btn.dataset.tab === 'settings') loadSettings();
             if (btn.dataset.tab === 'forecasts') loadForecasts();
@@ -2630,7 +2922,7 @@ async def root():
             timeframeSelect.addEventListener('change', function() { refreshTradeChart(); });
         }
     });
-
+    loadTradingPairs();
     connectWebSocket();
     loadDashboard();
     loadPnlChart();

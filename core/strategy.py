@@ -156,7 +156,45 @@ class TradingStrategy:
                 logger.debug(f"Помилка підтвердження на 1h: {e}")
 
         return True
-    
+
+    def detect_candle_patterns(self, df: pd.DataFrame) -> Dict:
+        """Розпізнавання свічкових патернів"""
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
+
+        patterns = {}
+
+        # Body та тіні
+        body = abs(last['close'] - last['open'])
+        upper_shadow = last['high'] - max(last['close'], last['open'])
+        lower_shadow = min(last['close'], last['open']) - last['low']
+
+        # Молот (Hammer) - довга нижня тінь, маленьке тіло
+        if lower_shadow > body * 2 and upper_shadow < body * 0.3:
+            patterns['hammer'] = 'bullish' if last['close'] > prev['close'] else 'neutral'
+
+        # Висячий чоловічок (Hanging Man) - на вершині
+        if lower_shadow > body * 2 and upper_shadow < body * 0.3:
+            patterns['hanging_man'] = 'bearish' if last['close'] < prev['close'] and last['high'] > prev[
+                'high'] else 'neutral'
+
+        # Біла/Чорна свічка
+        patterns['is_bullish'] = last['close'] > last['open']
+
+        # Доджі (Doji) - майже однакові open/close
+        patterns['doji'] = body / (last['high'] - last['low']) < 0.1 if last['high'] != last['low'] else False
+
+        # Поглинання (Engulfing)
+        if (last['close'] > last['open'] and prev['close'] < prev['open'] and
+                last['close'] > prev['open'] and last['open'] < prev['close']):
+            patterns['bullish_engulfing'] = True
+
+        if (last['close'] < last['open'] and prev['close'] > prev['open'] and
+                last['close'] < prev['open'] and last['open'] > prev['close']):
+            patterns['bearish_engulfing'] = True
+
+        return patterns
+
     def get_bollinger_signal(self, df: pd.DataFrame) -> str:
         """Сигнал на основі Bollinger Bands"""
         if 'BB_Position' not in df.columns:

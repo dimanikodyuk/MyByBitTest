@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import sys
+from pathlib import Path
 
-sys.path.insert(0, '/home/pi/MyByBitTest')
+# Додаємо кореневу директорію
+sys.path.insert(0, str(Path(__file__).parent))
 
 from utils.config_loader import config
 from exchange.bybit_client import BybitClient
@@ -19,9 +21,7 @@ for pair in config.get('trading.pairs', ['BTCUSDT', 'ETHUSDT', 'SOLUSDT']):
         print(f"  ❌ Немає даних для {pair}")
         continue
 
-    print(f"  Перші 3 рядки об'єму:")
-    print(df[['timestamp', 'volume']].head(3))
-    print(f"\n  Останній об'єм: {df['volume'].iloc[-1]:.0f}")
+    print(f"  Останній об'єм: {df['volume'].iloc[-1]:.0f}")
     print(f"  Середній об'єм: {df['volume'].mean():.0f}")
     print(f"  Volume Ratio: {df['volume'].iloc[-1] / df['volume'].mean():.2f}")
 
