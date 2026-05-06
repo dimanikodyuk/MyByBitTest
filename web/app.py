@@ -115,14 +115,18 @@ async def get_active_forecasts():
         db.close()
 
 
-
 async def create_forecast_internal(pair, signal_type, entry_price, target_price, confidence,
                                    position_quantity=0.0, position_usdt=0.0):
+    """Створення прогнозу з розміром позиції та налаштованою тривалістю"""
     db = SessionLocal()
     try:
         forecast_id = datetime.now().timestamp()
         now = get_current_time()
 
+        # Отримуємо тривалість прогнозу з конфігу
+        duration_hours = config.get('testing.forecast_duration_hours', 12)
+
+        # Перевіряємо чи вже є активний прогноз
         existing = db.query(ForecastDB).filter(
             ForecastDB.pair == pair,
             ForecastDB.signal_type == signal_type,
@@ -144,13 +148,11 @@ async def create_forecast_internal(pair, signal_type, entry_price, target_price,
             position_quantity=position_quantity,
             position_usdt=position_usdt,
             created_at=now,
-            expires_at=now + timedelta(hours=4),
+            expires_at=now + timedelta(hours=duration_hours),  # ← використовуємо параметр
             status="active"
         )
         db.add(forecast)
         db.commit()
-
-        time_left = 12
 
         forecast_dict = {
             "id": forecast_id,
@@ -163,8 +165,8 @@ async def create_forecast_internal(pair, signal_type, entry_price, target_price,
             "position_quantity": position_quantity,
             "position_usdt": position_usdt,
             "created_at": now.isoformat(),
-            "expires_at": (now + timedelta(hours=time_left)).isoformat(),
-            "time_remaining": time_left * 3600,
+            "expires_at": (now + timedelta(hours=duration_hours)).isoformat(),
+            "time_remaining": duration_hours * 3600,
             "status": "active",
             "profit_potential": ((target_price - entry_price) / entry_price) * 100 if entry_price > 0 else 0
         }
@@ -812,6 +814,51 @@ async def get_testing_settings():
         logger.error(f"Помилка отримання testing налаштувань: {e}")
         return {"create_trades_from_forecasts": False, "forecast_position_percent": 25.0}
 
+
+@app.get("/api/settings/forecast_duration")
+async def get_forecast_duration():
+    """Отримання тривалості прогнозу"""
+    try:
+        duration = config.get('testing.forecast_duration_hours', 12)
+        return {"forecast_duration_hours": duration}
+    except Exception as e:
+        logger.error(f"Помилка отримання тривалості прогнозу: {e}")
+        return {"forecast_duration_hours": 12}
+
+
+@app.post("/api/settings/forecast_duration")
+async def update_forecast_duration(data: Dict[str, Any]):
+    """Оновлення тривалості прогнозу"""
+    import yaml
+    from pathlib import Path
+
+    new_duration = data.get('forecast_duration_hours', 12)
+
+    # Валідація
+    if not isinstance(new_duration, (int, float)) or new_duration < 1 or new_duration > 72:
+        raise HTTPException(status_code=400, detail="Тривалість має бути від 1 до 72 годин")
+
+    config_path = Path(__file__).parent.parent / "config.yaml"
+
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            current_config = yaml.safe_load(f)
+
+        if 'testing' not in current_config:
+            current_config['testing'] = {}
+
+        current_config['testing']['forecast_duration_hours'] = new_duration
+
+        with open(config_path, 'w', encoding='utf-8') as f:
+            yaml.dump(current_config, f, allow_unicode=True, default_flow_style=False)
+
+        from utils.config_loader import reload_config
+        reload_config()
+
+        return {"status": "success", "forecast_duration_hours": new_duration}
+    except Exception as e:
+        logger.error(f"Помилка збереження тривалості прогнозу: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/forecast/chart/{forecast_id}")
 async def get_forecast_chart(forecast_id: str, timeframe: str = "1h"):
@@ -1480,48 +1527,51 @@ async def root():
         </div>
 
         <!-- НАЛАШТУВАННЯ -->
-        <div id="tab-settings" class="tab">
-            <div class="card"><div class="card-header"><h3>⚙️ Налаштування бота</h3></div><div style="padding:20px;">
-                <h4 style="color:#667eea; margin-bottom:15px;">📊 Торгівля</h4>
-                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:15px;margin-bottom:25px;">
-                    <div class="form-group"><label>⏱️ Базовий таймфрейм</label><select id="baseTimeframe"><option value="1m">1 хвилина</option><option value="5m">5 хвилин</option><option value="15m">15 хвилин</option><option value="1h">1 година</option><option value="4h">4 години</option><option value="1d">1 день</option></select></div>
-                    <div class="form-group"><label>📊 Виберіть торгові пари</label><select id="tradingPairsSelect" multiple size="6" style="width:100%; height:150px;"></select><small style="color:#666;">Утримуйте Ctrl (Cmd) для вибору кількох пар</small></div>
-                    <div class="form-group"><label>🚀 Угоди за прогнозами</label><select id="createTradesFromForecasts"><option value="true">✅ Увімкнено</option><option value="false">❌ Вимкнено</option></select></div>
-                    <div class="form-group"><label>💰 Розмір прогнозу (% балансу)</label><input type="range" id="forecastPositionPercent" min="1" max="100" step="1" value="25"><span id="forecastPositionPercentValue">25%</span></div>
-                </div>
-                <h4 style="color:#667eea; margin-bottom:15px;">📈 Стратегія (EMA/RSI/MACD)</h4>
-                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:15px;margin-bottom:25px;">
-                    <div class="form-group"><label>📈 EMA Fast</label><input type="number" id="emaFast" value="50"></div>
-                    <div class="form-group"><label>📉 EMA Slow</label><input type="number" id="emaSlow" value="200"></div>
-                    <div class="form-group"><label>📊 RSI період</label><input type="number" id="rsiPeriod" value="14"></div>
-                    <div class="form-group"><label>📊 RSI min</label><input type="number" id="rsiMin" value="40" step="1"></div>
-                    <div class="form-group"><label>📊 RSI max</label><input type="number" id="rsiMax" value="60" step="1"></div>
-                    <div class="form-group"><label>🎯 Take Profit %</label><input type="number" id="tpPercent" step="0.5" value="2.0"></div>
-                    <div class="form-group"><label>🛑 Stop Loss %</label><input type="number" id="slPercent" step="0.5" value="1.5"></div>
-                    <div class="form-group"><label>📊 Bollinger Bands</label><input type="checkbox" id="useBollinger"></div>
-                    
-                    <div class="form-group" title="Множник ATR для Stop Loss (чим більше, тим ширший стоп)">
-                        <label>📊 ATR Stop Loss множник</label>
-                        <input type="number" id="atrSlMultiplier" step="0.1" value="1.5">
-                        <small style="color:#666;">Чим більше, тим ширший стоп-лосс (1.5 = стандарт)</small>
+            <div id="tab-settings" class="tab">
+                <div class="card"><div class="card-header"><h3>⚙️ Налаштування бота</h3></div><div style="padding:20px;">
+                    <h4 style="color:#667eea; margin-bottom:15px;">📊 Торгівля</h4>
+                    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:15px;margin-bottom:25px;">
+                        <div class="form-group"><label>⏱️ Базовий таймфрейм</label><select id="baseTimeframe"><option value="1m">1 хвилина</option><option value="5m">5 хвилин</option><option value="15m">15 хвилин</option><option value="1h">1 година</option><option value="4h">4 години</option><option value="1d">1 день</option></select></div>
+                        <div class="form-group"><label>📊 Виберіть торгові пари</label><select id="tradingPairsSelect" multiple size="6" style="width:100%; height:150px;"></select><small style="color:#666;">Утримуйте Ctrl (Cmd) для вибору кількох пар</small></div>
+                        <div class="form-group"><label>🚀 Угоди за прогнозами</label><select id="createTradesFromForecasts"><option value="true">✅ Увімкнено</option><option value="false">❌ Вимкнено</option></select></div>
+                        <div class="form-group"><label>💰 Розмір прогнозу (% балансу)</label><input type="range" id="forecastPositionPercent" min="1" max="100" step="1" value="8"><span id="forecastPositionPercentValue">8%</span></div>
+                        <div class="form-group" title="Тривалість життя прогнозу в годинах">
+                            <label>⏰ Тривалість прогнозу (годин)</label>
+                            <input type="number" id="forecastDurationHours" min="1" max="72" step="1" value="12">
+                            <small style="color:#666;">Від 1 до 72 годин. Більше = довше очікування цілі</small>
+                        </div>
                     </div>
-                    <div class="form-group" title="Множник ATR для Take Profit (чим більше, тим вища ціль)">
-                        <label>🎯 ATR Take Profit множник</label>
-                        <input type="number" id="atrTpMultiplier" step="0.1" value="2.5">
-                        <small style="color:#666;">Чим більше, тим вища ціль (2.5 = RR=1.67 при SL=1.5)</small>
+                    <h4 style="color:#667eea; margin-bottom:15px;">📈 Стратегія (EMA/RSI/MACD)</h4>
+                    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:15px;margin-bottom:25px;">
+                        <div class="form-group"><label>📈 EMA Fast</label><input type="number" id="emaFast" value="21"></div>
+                        <div class="form-group"><label>📉 EMA Slow</label><input type="number" id="emaSlow" value="200"></div>
+                        <div class="form-group"><label>📊 RSI період</label><input type="number" id="rsiPeriod" value="14"></div>
+                        <div class="form-group"><label>📊 RSI min (LONG)</label><input type="number" id="rsiMinLong" value="40" step="1"></div>
+                        <div class="form-group"><label>📊 RSI max (LONG)</label><input type="number" id="rsiMaxLong" value="65" step="1"></div>
+                        <div class="form-group"><label>📊 RSI min (SHORT)</label><input type="number" id="rsiMinShort" value="35" step="1"></div>
+                        <div class="form-group"><label>📊 RSI max (SHORT)</label><input type="number" id="rsiMaxShort" value="60" step="1"></div>
+                        <div class="form-group"><label>🎯 Take Profit %</label><input type="number" id="tpPercent" step="0.5" value="2.0"></div>
+                        <div class="form-group"><label>🛑 Stop Loss %</label><input type="number" id="slPercent" step="0.5" value="1.5"></div>
+                        <div class="form-group"><label>📊 ATR SL множник</label><input type="number" id="atrSlMultiplier" step="0.1" value="1.5"></div>
+                        <div class="form-group"><label>🎯 ATR TP множник</label><input type="number" id="atrTpMultiplier" step="0.1" value="2.5"></div>
+                        <div class="form-group"><label>📊 Мін. ADX</label><input type="number" id="minAdx" value="20"></div>
+                        <div class="form-group"><label>📊 Мін. Volume Ratio</label><input type="number" id="minVolumeRatio" step="0.1" value="1.2"></div>
+                        <div class="form-group"><label>📊 MACD тільки крос</label><input type="checkbox" id="macdCrossOnly"></div>
+                        <div class="form-group"><label>📊 Bollinger Bands</label><input type="checkbox" id="useBollinger"></div>
                     </div>
-                    
-                </div>
-                <h4 style="color:#667eea; margin-bottom:15px;">🛡️ Ризик-менеджмент</h4>
-                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:15px;margin-bottom:25px;">
-                    <div class="form-group"><label>⚠️ Ризик на угоду (%)</label><input type="number" id="riskPerTrade" step="0.5" value="2.0"></div>
-                    <div class="form-group"><label>📊 Макс. відкритих угод</label><input type="number" id="maxOpenTrades" value="5"></div>
-                    <div class="form-group"><label>📉 Макс. денний збиток (%)</label><input type="number" id="maxDailyLoss" step="0.5" value="5.0"></div>
-                    <div class="form-group"><label>🧠 Kelly Criterion</label><input type="checkbox" id="useKelly"></div>
-                </div>
-                <div style="display:flex;gap:10px;justify-content:flex-end; margin-top:20px;"><button class="btn btn-outline" onclick="loadSettings()">🔄 Скинути</button><button class="btn btn-primary" onclick="saveSettings()">💾 Зберегти</button></div>
-            </div></div>
-        </div>
+                    <h4 style="color:#667eea; margin-bottom:15px;">🛡️ Ризик-менеджмент</h4>
+                    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:15px;margin-bottom:25px;">
+                        <div class="form-group"><label>⚠️ Ризик на угоду (%)</label><input type="number" id="riskPerTrade" step="0.5" value="2.0"></div>
+                        <div class="form-group"><label>📊 Макс. відкритих угод</label><input type="number" id="maxOpenTrades" value="3"></div>
+                        <div class="form-group"><label>📉 Макс. денний збиток (%)</label><input type="number" id="maxDailyLoss" step="0.5" value="5.0"></div>
+                        <div class="form-group"><label>🧠 Kelly Criterion</label><input type="checkbox" id="useKelly"></div>
+                    </div>
+                    <div style="display:flex;gap:10px;justify-content:flex-end; margin-top:20px;">
+                        <button class="btn btn-outline" onclick="loadSettings()">🔄 Скинути</button>
+                        <button class="btn btn-primary" onclick="saveSettings()">💾 Зберегти</button>
+                    </div>
+                </div></div>
+            </div>
 
         <!-- ЛОГИ -->
         <div id="tab-logs" class="tab">
@@ -1852,66 +1902,98 @@ async def root():
     }
 
     async function loadSettings() {
-        try {
-            const s = await (await fetch('/api/settings')).json();
-            document.getElementById('baseTimeframe').value = s.trading?.base_timeframe || '5m';
-            document.getElementById('emaFast').value = s.strategy?.ema_fast || 50;
-            document.getElementById('emaSlow').value = s.strategy?.ema_slow || 200;
-            document.getElementById('rsiPeriod').value = s.strategy?.rsi_period || 14;
-            document.getElementById('rsiMin').value = s.strategy?.rsi_min || 40;
-            document.getElementById('rsiMax').value = s.strategy?.rsi_max || 60;
-            document.getElementById('tpPercent').value = s.strategy?.take_profit_percent || 2.0;
-            document.getElementById('slPercent').value = s.strategy?.stop_loss_percent || 1.5;
-            document.getElementById('riskPerTrade').value = s.risk?.risk_per_trade || 2.0;
-            document.getElementById('maxOpenTrades').value = s.risk?.max_open_trades || 5;
-            document.getElementById('maxDailyLoss').value = s.risk?.max_daily_loss || 5.0;
-            document.getElementById('useBollinger').checked = s.strategy?.use_bollinger || false;
-            document.getElementById('useKelly').checked = s.risk?.use_kelly || false;
-            document.getElementById('atrSlMultiplier').value = s.strategy?.atr_sl_multiplier || 1.5;
-            document.getElementById('atrTpMultiplier').value = s.strategy?.atr_tp_multiplier || 2.5;
-
-            const t = await (await fetch('/api/settings/testing')).json();
-            document.getElementById('createTradesFromForecasts').value = t.create_trades_from_forecasts ? 'true' : 'false';
-            document.getElementById('forecastPositionPercent').value = t.forecast_position_percent;
-            document.getElementById('forecastPositionPercentValue').innerHTML = t.forecast_position_percent + '%';
-            await loadTradingPairs();
-        } catch(e) { console.error(e); }
-    }
+    try {
+        // Основні налаштування
+        const s = await (await fetch('/api/settings')).json();
+        document.getElementById('baseTimeframe').value = s.trading?.base_timeframe || '15m';
+        document.getElementById('emaFast').value = s.strategy?.ema_fast || 21;
+        document.getElementById('emaSlow').value = s.strategy?.ema_slow || 200;
+        document.getElementById('rsiPeriod').value = s.strategy?.rsi_period || 14;
+        document.getElementById('rsiMinLong').value = s.strategy?.rsi_min_long || 40;
+        document.getElementById('rsiMaxLong').value = s.strategy?.rsi_max_long || 65;
+        document.getElementById('rsiMinShort').value = s.strategy?.rsi_min_short || 35;
+        document.getElementById('rsiMaxShort').value = s.strategy?.rsi_max_short || 60;
+        document.getElementById('tpPercent').value = s.strategy?.take_profit_percent || 2.0;
+        document.getElementById('slPercent').value = s.strategy?.stop_loss_percent || 1.5;
+        document.getElementById('atrSlMultiplier').value = s.strategy?.atr_sl_multiplier || 1.5;
+        document.getElementById('atrTpMultiplier').value = s.strategy?.atr_tp_multiplier || 2.5;
+        document.getElementById('minAdx').value = s.strategy?.min_adx || 20;
+        document.getElementById('minVolumeRatio').value = s.strategy?.min_volume_ratio || 1.2;
+        document.getElementById('riskPerTrade').value = s.risk?.risk_per_trade || 2.0;
+        document.getElementById('maxOpenTrades').value = s.risk?.max_open_trades || 3;
+        document.getElementById('maxDailyLoss').value = s.risk?.max_daily_loss || 5.0;
+        document.getElementById('macdCrossOnly').checked = s.strategy?.macd_cross_only || false;
+        document.getElementById('useBollinger').checked = s.strategy?.use_bollinger || false;
+        document.getElementById('useKelly').checked = s.risk?.use_kelly || false;
+        
+        // Тестові налаштування
+        const t = await (await fetch('/api/settings/testing')).json();
+        document.getElementById('createTradesFromForecasts').value = t.create_trades_from_forecasts ? 'true' : 'false';
+        document.getElementById('forecastPositionPercent').value = t.forecast_position_percent || 8;
+        document.getElementById('forecastPositionPercentValue').innerHTML = (t.forecast_position_percent || 8) + '%';
+        
+        // Тривалість прогнозу
+        const d = await (await fetch('/api/settings/forecast_duration')).json();
+        document.getElementById('forecastDurationHours').value = d.forecast_duration_hours || 12;
+        
+        await loadTradingPairs();
+    } catch(e) { console.error(e); }
+}
 
     async function saveSettings() {
-        const settings = {
-            trading: { base_timeframe: document.getElementById('baseTimeframe').value },
-            strategy: {
-                ema_fast: parseInt(document.getElementById('emaFast').value),
-                ema_slow: parseInt(document.getElementById('emaSlow').value),
-                rsi_period: parseInt(document.getElementById('rsiPeriod').value),
-                rsi_min: parseInt(document.getElementById('rsiMin').value),
-                rsi_max: parseInt(document.getElementById('rsiMax').value),
-                atr_sl_multiplier: parseFloat(document.getElementById('atrSlMultiplier').value),
-                atr_tp_multiplier: parseFloat(document.getElementById('atrTpMultiplier').value),
-
-                take_profit_percent: parseFloat(document.getElementById('tpPercent').value),
-                stop_loss_percent: parseFloat(document.getElementById('slPercent').value),
-                use_bollinger: document.getElementById('useBollinger').checked
-            },
-            risk: {
-                risk_per_trade: parseFloat(document.getElementById('riskPerTrade').value),
-                max_open_trades: parseInt(document.getElementById('maxOpenTrades').value),
-                max_daily_loss: parseFloat(document.getElementById('maxDailyLoss').value),
-                use_kelly: document.getElementById('useKelly').checked
-            }
-        };
-        try {
-            await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settings) });
-            const createTrades = document.getElementById('createTradesFromForecasts').value === 'true';
-            const forecastPercent = parseFloat(document.getElementById('forecastPositionPercent').value);
-            await fetch('/api/settings/testing', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ create_trades_from_forecasts: createTrades, forecast_position_percent: forecastPercent }) });
-            if (window.selectedPairs && window.selectedPairs.length) {
-                await fetch('/api/trading_pairs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pairs: window.selectedPairs }) });
-            }
-            alert('Налаштування збережено!');
-        } catch(e) { alert('Помилка: ' + e.message); }
-    }
+    const settings = {
+        trading: { base_timeframe: document.getElementById('baseTimeframe').value },
+        strategy: {
+            ema_fast: parseInt(document.getElementById('emaFast').value),
+            ema_slow: parseInt(document.getElementById('emaSlow').value),
+            rsi_period: parseInt(document.getElementById('rsiPeriod').value),
+            rsi_min_long: parseInt(document.getElementById('rsiMinLong').value),
+            rsi_max_long: parseInt(document.getElementById('rsiMaxLong').value),
+            rsi_min_short: parseInt(document.getElementById('rsiMinShort').value),
+            rsi_max_short: parseInt(document.getElementById('rsiMaxShort').value),
+            take_profit_percent: parseFloat(document.getElementById('tpPercent').value),
+            stop_loss_percent: parseFloat(document.getElementById('slPercent').value),
+            atr_sl_multiplier: parseFloat(document.getElementById('atrSlMultiplier').value),
+            atr_tp_multiplier: parseFloat(document.getElementById('atrTpMultiplier').value),
+            min_adx: parseInt(document.getElementById('minAdx').value),
+            min_volume_ratio: parseFloat(document.getElementById('minVolumeRatio').value),
+            macd_cross_only: document.getElementById('macdCrossOnly').checked,
+            use_bollinger: document.getElementById('useBollinger').checked
+        },
+        risk: {
+            risk_per_trade: parseFloat(document.getElementById('riskPerTrade').value),
+            max_open_trades: parseInt(document.getElementById('maxOpenTrades').value),
+            max_daily_loss: parseFloat(document.getElementById('maxDailyLoss').value),
+            use_kelly: document.getElementById('useKelly').checked
+        }
+    };
+    
+    try {
+        // Збереження основних налаштувань
+        await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settings) });
+        
+        // Збереження тестових налаштувань
+        const createTrades = document.getElementById('createTradesFromForecasts').value === 'true';
+        const forecastPercent = parseFloat(document.getElementById('forecastPositionPercent').value);
+        await fetch('/api/settings/testing', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ 
+            create_trades_from_forecasts: createTrades, 
+            forecast_position_percent: forecastPercent 
+        }) });
+        
+        // Збереження тривалості прогнозу
+        const forecastDuration = parseInt(document.getElementById('forecastDurationHours').value);
+        await fetch('/api/settings/forecast_duration', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ 
+            forecast_duration_hours: forecastDuration 
+        }) });
+        
+        // Збереження торгових пар
+        if (window.selectedPairs && window.selectedPairs.length) {
+            await fetch('/api/trading_pairs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pairs: window.selectedPairs }) });
+        }
+        
+        alert('Налаштування збережено!');
+    } catch(e) { alert('Помилка: ' + e.message); }
+}
 
     async function loadTradingPairs() {
         try {
