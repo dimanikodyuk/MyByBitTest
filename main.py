@@ -49,7 +49,7 @@ class AutoTradingBot:
     async def initialize(self):
         """Ініціалізація всіх компонентів"""
         logger.info("=" * 50)
-        logger.info("AutoTrading Bot v1.0 - Paper Trading Mode + Web UI")
+        logger.info("AutoTrading Bot v3.0 - Paper Trading Mode + Web UI")
         logger.info("=" * 50)
 
         # Ініціалізація БД
@@ -86,6 +86,7 @@ class AutoTradingBot:
 
         logger.info("✅ Бот успішно ініціалізовано")
         logger.info("🌐 Web UI доступний за адресою http://localhost:8000")
+        logger.info("🌐 Web RP4 доступний за адресою http://192.168.0.247:8000/")
 
         await self.telegram_bot.send_message(
             "✅ *AutoTrading Bot Initialized*\n\n"

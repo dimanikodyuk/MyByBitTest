@@ -2,846 +2,332 @@
 <html lang="uk">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AutoTrading Bot v3.0</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+    <title>AutoTrading Bot v3.0 - Повнофункціональний Термінал</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://cdn.plot.ly/plotly-3.0.1.min.js"></script>
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Inter', sans-serif; background: linear-gradient(135deg, #0a0a1a 0%, #0f0f2a 100%); color: #fff; min-height: 100vh; }
-        .nav { background: rgba(15,20,40,0.95); backdrop-filter: blur(10px); border-bottom: 1px solid rgba(102,126,234,0.3); position: sticky; top: 0; z-index: 100; padding: 12px 20px; }
-        .nav-content { max-width: 1400px; margin: 0 auto; display: flex; gap: 8px; overflow-x: auto; justify-content: center; flex-wrap: wrap; }
-        .nav-btn { padding: 10px 24px; background: transparent; border: none; color: #888; font-weight: 500; cursor: pointer; border-radius: 40px; transition: all 0.2s; }
-        .nav-btn:hover { background: rgba(102,126,234,0.2); color: #fff; }
-        .nav-btn.active { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; }
-        .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
-        .tab { display: none; animation: fadeIn 0.3s ease-out; }
-        .tab.active { display: block; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-        .card { background: rgba(26,26,46,0.8); backdrop-filter: blur(10px); border-radius: 20px; border: 1px solid rgba(102,126,234,0.2); margin-bottom: 20px; overflow: hidden; }
-        .card-header { padding: 16px 20px; background: rgba(15,20,40,0.6); border-bottom: 1px solid rgba(102,126,234,0.2); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; }
-        .card-header h3 { font-size: 18px; font-weight: 600; }
-        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; margin-bottom: 20px; }
-        .stat-card { background: rgba(26,26,46,0.8); border-radius: 20px; padding: 20px; border: 1px solid rgba(102,126,234,0.3); transition: transform 0.2s; }
-        .stat-card:hover { transform: translateY(-2px); border-color: #667eea; }
-        .stat-value { font-size: 32px; font-weight: 700; background: linear-gradient(135deg, #fff 0%, #667eea 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }
-        .stat-value.positive { background: linear-gradient(135deg, #00ff88 0%, #00cc6a 100%); -webkit-background-clip: text; background-clip: text; }
-        .stat-value.negative { background: linear-gradient(135deg, #ff4757 0%, #ff6b81 100%); -webkit-background-clip: text; background-clip: text; }
-        .stat-label { color: #888; font-size: 13px; margin-top: 8px; }
-        .next-forecast { background: linear-gradient(135deg, rgba(102,126,234,0.2), rgba(118,75,162,0.2)); border-radius: 15px; padding: 15px; margin-bottom: 20px; text-align: center; }
-        .timer-big { font-size: 24px; font-weight: 700; color: #00d4ff; font-family: monospace; }
-        .btn { padding: 10px 20px; border-radius: 40px; font-weight: 600; font-size: 13px; cursor: pointer; border: none; font-family: inherit; transition: all 0.2s; display: inline-flex; align-items: center; gap: 6px; }
-        .btn-primary { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; }
-        .btn-primary:hover { transform: scale(1.02); box-shadow: 0 5px 15px rgba(102,126,234,0.4); }
-        .btn-danger { background: linear-gradient(135deg, #ff4757 0%, #c0392b 100%); color: white; }
-        .btn-outline { background: transparent; border: 1px solid #667eea; color: #667eea; }
-        .btn-sm { padding: 6px 12px; font-size: 12px; }
-        .btn-success { background: linear-gradient(135deg, #00ff88 0%, #00cc6a 100%); color: #0a0a1a; }
-        .table-wrapper { overflow-x: auto; }
-        table { width: 100%; border-collapse: collapse; }
-        th, td { padding: 12px; text-align: left; border-bottom: 1px solid rgba(102,126,234,0.1); }
-        th { background: rgba(15,20,40,0.6); color: #667eea; font-weight: 600; font-size: 13px; }
-        td { font-size: 13px; }
-        .badge { display: inline-block; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; }
-        .badge-buy, .badge-long { background: linear-gradient(135deg, #00ff88 0%, #00cc6a 100%); color: #0a0a1a; }
-        .badge-sell, .badge-short { background: linear-gradient(135deg, #ff4757 0%, #c0392b 100%); color: white; }
-        .badge-active { background: #00ff88; color: #0a0a1a; }
-        .badge-expired { background: #666; color: white; }
-        .timer { font-family: monospace; font-size: 14px; font-weight: 700; color: #00d4ff; }
-        .form-group { margin-bottom: 15px; }
-        .form-group label { display: block; margin-bottom: 5px; color: #888; font-size: 13px; }
-        .form-group input, .form-group select { width: 100%; padding: 10px; background: rgba(15,20,40,0.8); border: 1px solid rgba(102,126,234,0.3); border-radius: 10px; color: white; font-family: inherit; }
-        .chart-container { padding: 20px; min-height: 450px; }
-        .log-info { color: #00d4ff; }
-        .log-warning { color: #ffa502; }
-        .log-error { color: #ff4757; }
-        .positive { color: #00ff88; font-weight: 600; }
-        .negative { color: #ff4757; font-weight: 600; }
-        .server-time { font-size: 12px; color: #666; text-align: right; margin-top: 10px; }
-        .metric-card { background: rgba(26,26,46,0.5); border-radius: 15px; padding: 15px; text-align: center; }
-        .metric-value { font-size: 24px; font-weight: 700; }
-        .metric-label { font-size: 11px; color: #888; margin-top: 5px; }
-        .hidden { display: none; }
-        .forecast-tabs { display: flex; gap: 10px; margin-bottom: 15px; padding: 0 20px; }
-        .forecast-tab-btn { padding: 8px 20px; background: rgba(15,20,40,0.6); border: none; border-radius: 30px; color: #888; cursor: pointer; }
-        .forecast-tab-btn.active { background: #667eea; color: white; }
-        @media (max-width: 768px) { .container { padding: 12px; } .stat-value { font-size: 24px; } th, td { padding: 8px; font-size: 11px; } }
-        @media (max-width: 480px) { .stats-grid { grid-template-columns: repeat(2, 1fr); } }
-        .notification-permission { position: fixed; bottom: 20px; right: 20px; background: #667eea; padding: 10px 15px; border-radius: 40px; cursor: pointer; z-index: 1000; }
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{font-family:'Inter',sans-serif;background:linear-gradient(135deg,#0a0a1a 0%,#0f0f2a 100%);color:#fff;min-height:100vh}
+        .nav{background:rgba(15,20,40,0.95);backdrop-filter:blur(10px);border-bottom:1px solid rgba(102,126,234,0.3);position:sticky;top:0;z-index:100;padding:12px 20px}
+        .nav-content{max-width:1400px;margin:0 auto;display:flex;gap:8px;overflow-x:auto;justify-content:center;flex-wrap:wrap}
+        .nav-btn{padding:10px 20px;background:transparent;border:none;color:#888;font-weight:500;cursor:pointer;border-radius:40px;transition:all 0.2s;white-space:nowrap;font-size:14px}
+        .nav-btn:hover{background:rgba(102,126,234,0.2);color:#fff}
+        .nav-btn.active{background:linear-gradient(135deg,#667eea,#764ba2);color:white}
+        .container{max-width:1400px;margin:0 auto;padding:20px}
+        .tab{display:none;animation:fadeIn .3s ease-out}
+        .tab.active{display:block}
+        @keyframes fadeIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+        .card{background:rgba(26,26,46,0.8);backdrop-filter:blur(10px);border-radius:20px;border:1px solid rgba(102,126,234,0.2);margin-bottom:20px;overflow:hidden}
+        .card-header{padding:16px 20px;background:rgba(15,20,40,0.6);border-bottom:1px solid rgba(102,126,234,0.2);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px}
+        .card-header h3{font-size:18px;font-weight:600}
+        .stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:16px;margin-bottom:20px}
+        .stat-card{background:rgba(26,26,46,0.8);border-radius:20px;padding:20px;border:1px solid rgba(102,126,234,0.3);transition:transform .2s}
+        .stat-card:hover{transform:translateY(-2px);border-color:#667eea}
+        .stat-value{font-size:28px;font-weight:700;background:linear-gradient(135deg,#fff,#667eea);-webkit-background-clip:text;background-clip:text;color:transparent}
+        .stat-value.positive{background:linear-gradient(135deg,#00ff88,#00cc6a);-webkit-background-clip:text;background-clip:text}
+        .stat-value.negative{background:linear-gradient(135deg,#ff4757,#ff6b81);-webkit-background-clip:text;background-clip:text}
+        .stat-label{color:#888;font-size:13px;margin-top:8px}
+        .next-forecast{background:linear-gradient(135deg,rgba(102,126,234,0.2),rgba(118,75,162,0.2));border-radius:15px;padding:15px;margin-bottom:20px;text-align:center}
+        .timer-big{font-size:24px;font-weight:700;color:#00d4ff;font-family:monospace}
+        .btn{padding:8px 16px;border-radius:40px;font-weight:600;font-size:13px;cursor:pointer;border:none;font-family:inherit;transition:all .2s;display:inline-flex;align-items:center;gap:6px}
+        .btn-primary{background:linear-gradient(135deg,#667eea,#764ba2);color:white}
+        .btn-primary:hover{transform:scale(1.02);box-shadow:0 5px 15px rgba(102,126,234,0.4)}
+        .btn-danger{background:linear-gradient(135deg,#ff4757,#c0392b);color:white}
+        .btn-outline{background:transparent;border:1px solid #667eea;color:#667eea}
+        .btn-sm{padding:5px 10px;font-size:11px}
+        .btn-success{background:linear-gradient(135deg,#00ff88,#00cc6a);color:#0a0a1a}
+        .table-wrapper{overflow-x:auto}
+        table{width:100%;border-collapse:collapse}
+        th,td{padding:10px 12px;text-align:left;border-bottom:1px solid rgba(102,126,234,0.1);font-size:13px}
+        th{background:rgba(15,20,40,0.6);color:#667eea;font-weight:600}
+        .badge{display:inline-block;padding:4px 10px;border-radius:20px;font-size:11px;font-weight:600}
+        .badge-long,.badge-buy{background:linear-gradient(135deg,#00ff88,#00cc6a);color:#0a0a1a}
+        .badge-short,.badge-sell{background:linear-gradient(135deg,#ff4757,#c0392b);color:white}
+        .badge-active{background:#00ff88;color:#0a0a1a}
+        .badge-expired{background:#666;color:white}
+        .form-group{margin-bottom:15px}
+        .form-group label{display:block;margin-bottom:5px;color:#888;font-size:13px}
+        .form-group input,.form-group select{width:100%;padding:10px;background:rgba(15,20,40,0.8);border:1px solid rgba(102,126,234,0.3);border-radius:10px;color:white;font-family:inherit}
+        .chart-container{padding:20px;min-height:400px}
+        .log-info{color:#00d4ff}
+        .log-warning{color:#ffa502}
+        .log-error{color:#ff4757}
+        .positive{color:#00ff88;font-weight:600}
+        .negative{color:#ff4757;font-weight:600}
+        .server-time{font-size:12px;color:#666;text-align:right;margin-top:10px}
+        .metric-card{background:rgba(26,26,46,0.5);border-radius:15px;padding:15px;text-align:center}
+        .metric-value{font-size:24px;font-weight:700}
+        .metric-label{font-size:11px;color:#888;margin-top:5px}
+        .hidden{display:none}
+        .forecast-tabs{display:flex;gap:10px;margin-bottom:15px;padding:0 20px}
+        .forecast-tab-btn{padding:8px 20px;background:rgba(15,20,40,0.6);border:none;border-radius:30px;color:#888;cursor:pointer}
+        .forecast-tab-btn.active{background:#667eea;color:white}
+        .backtest-params-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:15px;margin-bottom:20px}
+        .progress-bar-container{background:rgba(102,126,234,0.2);border-radius:10px;overflow:hidden;margin:10px 0}
+        .progress-bar{width:0%;height:20px;background:linear-gradient(135deg,#667eea,#764ba2);transition:width .3s}
+        .metrics-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:15px;margin-bottom:20px}
+        .metric-card-backtest{background:rgba(26,26,46,0.6);border-radius:15px;padding:12px;text-align:center;border:1px solid rgba(102,126,234,0.2)}
+        .metric-value-backtest{font-size:22px;font-weight:700}
+        .metric-label-backtest{font-size:11px;color:#888;margin-top:5px}
+        .strategy-balance{font-size:32px;font-weight:700;color:#00d4ff}
+        @media(max-width:768px){.container{padding:12px}.nav-btn{padding:6px 12px;font-size:12px}.stat-value{font-size:22px}th,td{padding:6px 8px;font-size:11px}}
+        @media(max-width:480px){.stats-grid{grid-template-columns:repeat(2,1fr)}}
+        .notification-permission{position:fixed;bottom:20px;right:20px;background:#667eea;padding:8px 15px;border-radius:40px;cursor:pointer;z-index:1000;font-size:12px}
+        td, tr { cursor: pointer; }
+        .btn-sm { cursor: pointer; }
     </style>
 </head>
 <body>
-    <div class="nav">
-        <div class="nav-content">
-            <button class="nav-btn active" data-tab="dashboard">📊 Дашборд</button>
-            <button class="nav-btn" data-tab="forecasts">🎯 Прогнози</button>
-            <button class="nav-btn" data-tab="analysis">📈 Аналіз + Графіки</button>
-            <button class="nav-btn" data-tab="patterns">📐 Патерни</button>
-            <button class="nav-btn" data-tab="settings">⚙️ Налаштування</button>
-            <button class="nav-btn" data-tab="logs">📜 Логи</button>
-        </div>
+<div class="nav"><div class="nav-content">
+    <button class="nav-btn active" data-tab="dashboard">📊 Дашборд</button>
+    <button class="nav-btn" data-tab="forecasts">🎯 Прогнози</button>
+    <button class="nav-btn" data-tab="analysis">📈 Аналіз + Графіки</button>
+    <button class="nav-btn" data-tab="patterns">📐 Патерни</button>
+    <button class="nav-btn" data-tab="settings">⚙️ Налаштування</button>
+    <button class="nav-btn" data-tab="logs">📜 Логи</button>
+    <button class="nav-btn" data-tab="backtest">🔄 Бектестер</button>
+    <button class="nav-btn" data-tab="news">📰 Новини</button>
+    <button class="nav-btn" data-tab="listings">🆕 Нові монети</button>
+</div></div>
+
+<div class="container">
+    <div id="tab-dashboard" class="tab active">
+        <div class="next-forecast"><div>⏰ Наступний прогноз через</div><div class="timer-big" id="nextForecastTimer">--:--:--</div></div>
+        <div class="stats-grid"><div class="stat-card"><div class="stat-value" id="balance">$0</div><div class="stat-label">Баланс</div></div><div class="stat-card"><div class="stat-value" id="lockedAmount">$0</div><div class="stat-label">🔒 Заблоковано</div></div><div class="stat-card"><div class="stat-value" id="openTrades">0</div><div class="stat-label">Активні позиції</div></div><div class="stat-card"><div class="stat-value" id="totalPnL">$0</div><div class="stat-label">Загальний PnL</div></div><div class="stat-card"><div class="stat-value" id="winRate">0%</div><div class="stat-label">Win Rate</div></div><div class="stat-card"><div class="stat-value" id="dailyPnL">$0</div><div class="stat-label">Сьогодні</div></div><div class="stat-card"><div class="stat-value" id="totalTrades">0</div><div class="stat-label">Всього угод</div></div></div>
+        <div class="stats-grid"><div class="stat-card"><div class="stat-value" id="profitFactor">0</div><div class="stat-label">Profit Factor</div></div><div class="stat-card"><div class="stat-value" id="maxDrawdown">0</div><div class="stat-label">Max Drawdown</div></div><div class="stat-card"><div class="stat-value" id="avgPnL">$0</div><div class="stat-label">Середній PnL</div></div><div class="stat-card"><div class="stat-value" id="kelly">0%</div><div class="stat-label">Kelly</div></div></div>
+        <div class="card"><div class="card-header"><h3>📈 Відкриті позиції</h3><button class="btn btn-danger" onclick="closeAllTrades()">🔴 Закрити всі</button></div><div class="table-wrapper"><table><thead><tr><th>Пара</th><th>Сторона</th><th>Вхід</th><th>Кількість</th><th>TP</th><th>SL</th><th>Поточний PnL</th><th>Дії</th></tr></thead><tbody id="openTradesBody"><tr><td colspan="8">Завантаження...</td></tr></tbody></table></div></div>
+        <div class="card"><div class="card-header"><h3>📜 Історія угод</h3></div><div class="table-wrapper"><table><thead><tr><th>Час</th><th>Пара</th><th>Сторона</th><th>Вхід</th><th>Вихід</th><th>PnL</th></tr></thead><tbody id="tradesBody"><tr><td colspan="6">Завантаження...</td></tr></tbody></table></div></div>
+        <div class="card"><div class="card-header"><h3>📈 Equity Curve</h3></div><div class="chart-container" id="equityChart"></div></div>
+        <div class="server-time" id="serverTime"></div>
     </div>
 
-    <div class="container">
-        <!-- ДАШБОРД -->
-        <div id="tab-dashboard" class="tab active">
-            <div class="next-forecast">
-                <div style="font-size:14px; color:#888;">⏰ Наступний прогноз через</div>
-                <div class="timer-big" id="nextForecastTimer">--:--:--</div>
-            </div>
-            <div class="stats-grid">
-                <div class="stat-card"><div class="stat-value" id="balance">$0</div><div class="stat-label">Баланс (USDT)</div></div>
-                <div class="stat-card"><div class="stat-value" id="lockedAmount">$0</div><div class="stat-label">🔒 Заблоковано</div></div>
-                <div class="stat-card"><div class="stat-value" id="openTrades">0</div><div class="stat-label">Активні позиції</div></div>
-                <div class="stat-card"><div class="stat-value" id="totalPnL">$0</div><div class="stat-label">Загальний PnL</div></div>
-                <div class="stat-card"><div class="stat-value" id="winRate">0%</div><div class="stat-label">Відсоток успіху</div></div>
-                <div class="stat-card"><div class="stat-value" id="dailyPnL">$0</div><div class="stat-label">Сьогодні</div></div>
-                <div class="stat-card"><div class="stat-value" id="totalTrades">0</div><div class="stat-label">Всього угод</div></div>
-            </div>
-            <div class="stats-grid">
-                <div class="stat-card"><div class="stat-value" id="profitFactor">0</div><div class="stat-label">Profit Factor</div></div>
-                <div class="stat-card"><div class="stat-value" id="maxDrawdown">0</div><div class="stat-label">Max Drawdown ($)</div></div>
-                <div class="stat-card"><div class="stat-value" id="avgPnL">$0</div><div class="stat-label">Середній PnL</div></div>
-                <div class="stat-card"><div class="stat-value" id="kelly">0%</div><div class="stat-label">Kelly Criterion</div></div>
-            </div>
-
-            <div class="card">
-                <div class="card-header"><h3>📈 Відкриті позиції</h3> <button class="btn btn-danger" onclick="closeAllTrades()">🔴 Закрити всі позиції</button> </div>
-                <div class="table-wrapper">
-                    <table style="width:100%; border-collapse: collapse;">
-                        <thead><tr><th>Пара</th><th>Сторона</th><th>Вхід</th><th>Кількість</th><th>TP</th><th>SL</th><th>Поточний PnL</th><th>Дії</th></tr></thead>
-                        <tbody id="openTradesBody"><tr><td colspan="8" style="text-align: center;">Завантаження...</td></tr></tbody>
-                    </table>
-                </div>
-            </div>
-
-            <div class="card">
-                <div class="card-header"><h3>📜 Історія угод</h3></div>
-                <div class="table-wrapper">
-                    <table style="width:100%; border-collapse: collapse;">
-                        <thead><tr><th>Час</th><th>Пара</th><th>Сторона</th><th>Вхід</th><th>Вихід</th><th>PnL</th></tr></thead>
-                        <tbody id="tradesBody"><tr><td colspan="6" style="text-align: center;">Завантаження...</td></tr></tbody>
-                    </table>
-                </div>
-            </div>
-            <div class="card">
-                <div class="card-header"><h3>📈 Equity Curve</h3></div>
-                <div class="chart-container" id="equityChart"></div>
-            </div>
-            <div class="server-time" id="serverTime"></div>
-        </div>
-
-        <!-- ПРОГНОЗИ (активні + історія) -->
-        <div id="tab-forecasts" class="tab">
-            <div class="card">
-                <div class="card-header"><h3>🎯 Прогнози</h3><span style="font-size:12px; color:#888;">Автоматичні сигнали</span></div>
-                <div class="forecast-tabs">
-                    <button class="forecast-tab-btn active" onclick="showForecastList('active')">🟢 Активні</button>
-                    <button class="forecast-tab-btn" onclick="showForecastList('history')">📜 Історія</button>
-                    <button class="btn btn-outline btn-sm" onclick="clearAllForecasts()" style="margin-left:auto;">🗑️ Очистити всі</button>
-                </div>
-                <div id="activeForecastsList">
-                    <div class="table-wrapper">
-                        <table><thead><tr><th>Пара</th><th>Тип</th><th>Вхід</th><th>Ціль</th><th>Поточна</th><th>Прибуток</th><th>Впевн.</th><th>Час до кінця</th><th></th></tr></thead>
-                        <tbody id="forecastsBody"><tr><td colspan="9">Завантаження...</td></tr></tbody></table>
-                    </div>
-                </div>
-                <div id="historyForecastsList" class="hidden">
-                    <div class="table-wrapper">
-                        <table><thead><tr><th>Час створення</th><th>Пара</th><th>Тип</th><th>Вхід</th><th>Ціль</th><th>Результат</th><th></th></tr></thead>
-                        <tbody id="forecastsHistoryBody"><tr><td colspan="7">Завантаження...</td></tr></tbody></table>
-                    </div>
-                    <div style="padding:15px;text-align:center;"><button class="btn btn-outline btn-sm" id="loadMoreHistoryBtn" onclick="loadMoreHistory()" style="display:none;">📥 Завантажити ще</button></div>
-                </div>
-            </div>
-        </div>
-
-        <!-- АНАЛІЗ + ГРАФІКИ -->
-        <div id="tab-analysis" class="tab">
-            <div class="card">
-                <div class="card-header"><h3>📊 Ринковий аналіз</h3><div style="display:flex;gap:10px;"><select id="analysisPair"><option value="BTCUSDT">BTCUSDT</option><option value="ETHUSDT">ETHUSDT</option><option value="SOLUSDT">SOLUSDT</option></select><button class="btn btn-primary btn-sm" onclick="loadAnalysis()">Аналіз</button></div></div>
-                <div id="analysisResult" style="padding:20px;"><div style="text-align:center;color:#888;">Виберіть пару та натисніть "Аналіз"</div></div>
-            </div>
-            <div class="card">
-                <div class="card-header"><h3>📈 Графік</h3><div style="display:flex;gap:10px;"><select id="chartPair"><option value="BTCUSDT">BTCUSDT</option><option value="ETHUSDT">ETHUSDT</option><option value="SOLUSDT">SOLUSDT</option></select><select id="chartTimeframe"><option value="1h">1 година</option><option value="4h">4 години</option><option value="1d">1 день</option></select><button class="btn btn-primary btn-sm" onclick="loadChart()">Оновити</button><button class="btn btn-outline btn-sm" onclick="resetChartView()">⟳ Скинути</button></div></div>
-                <div class="chart-container" id="priceChart"></div>
-            </div>
-            <div class="card"><div class="card-header"><h3>📈 PnL динаміка</h3></div><div class="chart-container" id="pnlChart"></div></div>
-        </div>
-
-        <!-- ПАТЕРНИ -->
-        <div id="tab-patterns" class="tab">
-            <div class="card">
-                <div class="card-header"><h3>📐 Фігури технічного аналізу</h3><div style="display:flex;gap:10px;"><select id="taPair"><option value="BTCUSDT">BTCUSDT</option><option value="ETHUSDT">ETHUSDT</option><option value="SOLUSDT">SOLUSDT</option></select><select id="taTimeframe"><option value="1h">1 година</option><option value="4h">4 години</option><option value="1d">1 день</option></select><button class="btn btn-primary btn-sm" onclick="loadTAPatterns()">🔍 Аналіз</button></div></div>
-                <div class="chart-container" id="taChart" style="min-height: 600px;"></div>
-                <div id="taInfo" style="padding: 20px; border-top: 1px solid rgba(102,126,234,0.2);">
-                    <div style="color:#888;">Натисніть "Аналіз" для пошуку фігур</div>
-                </div>
-            </div>
-        </div>
-
-        <!-- НАЛАШТУВАННЯ -->
-        <div id="tab-settings" class="tab">
-            <div class="card"><div class="card-header"><h3>⚙️ Налаштування бота</h3></div><div style="padding:20px;">
-                <h4 style="color:#667eea; margin-bottom:15px;">📊 Торгівля</h4>
-                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:15px;margin-bottom:25px;">
-                    <div class="form-group" title="Період для розрахунку індикаторів (рекомендовано 15m)">
-                        <label>⏱️ Базовий таймфрейм</label>
-                        <select id="baseTimeframe">
-                            <option value="1m">1 хвилина</option>
-                            <option value="5m">5 хвилин</option>
-                            <option value="15m">15 хвилин</option>
-                            <option value="1h">1 година</option>
-                            <option value="4h">4 години</option>
-                            <option value="1d">1 день</option>
-                        </select>
-                        <small style="color:#666;">Чим більший таймфрейм, тим менше хибних сигналів, але повільніша реакція</small>
-                    </div>
-                    <div class="form-group">
-                        <label>📊 Виберіть торгові пари</label>
-                        <select id="tradingPairsSelect" multiple size="6" style="width:100%; height:150px;"></select>
-                        <small style="color:#666;">Утримуйте Ctrl (Cmd) для вибору кількох пар</small>
-                    </div>
-                    <div class="form-group" title="Автоматичне створення угод на основі прогнозів">
-                        <label>🚀 Угоди за прогнозами</label>
-                        <select id="createTradesFromForecasts">
-                            <option value="true">✅ Увімкнено</option>
-                            <option value="false">❌ Вимкнено</option>
-                        </select>
-                        <small style="color:#666;">При увімкненні, кожен прогноз створює реальну угоду</small>
-                    </div>
-                    <div class="form-group" title="Відсоток балансу для прогнозу (рекомендовано 5-10%)">
-                        <label>💰 Розмір прогнозу (% балансу)</label>
-                        <input type="range" id="forecastPositionPercent" min="1" max="100" step="1" value="8">
-                        <span id="forecastPositionPercentValue">8%</span>
-                        <small style="color:#666;">При 8% кожен прогноз використовує 8% балансу</small>
-                    </div>
-                    <div class="form-group" title="Тривалість життя прогнозу в годинах">
-                        <label>⏰ Тривалість прогнозу (годин)</label>
-                        <input type="number" id="forecastDurationHours" min="1" max="72" step="1" value="12">
-                        <small style="color:#666;">Від 1 до 72 годин</small>
-                    </div>
-                </div>
-                <h4 style="color:#667eea; margin-bottom:15px;">📈 Стратегія (EMA/RSI/MACD)</h4>
-                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:15px;margin-bottom:25px;">
-                    <div class="form-group"><label>📈 EMA Fast</label><input type="number" id="emaFast" value="21"></div>
-                    <div class="form-group"><label>📉 EMA Slow</label><input type="number" id="emaSlow" value="200"></div>
-                    <div class="form-group"><label>📊 RSI період</label><input type="number" id="rsiPeriod" value="14"></div>
-                    <div class="form-group"><label>📊 RSI min (LONG)</label><input type="number" id="rsiMinLong" value="40" step="1"></div>
-                    <div class="form-group"><label>📊 RSI max (LONG)</label><input type="number" id="rsiMaxLong" value="65" step="1"></div>
-                    <div class="form-group"><label>📊 RSI min (SHORT)</label><input type="number" id="rsiMinShort" value="35" step="1"></div>
-                    <div class="form-group"><label>📊 RSI max (SHORT)</label><input type="number" id="rsiMaxShort" value="60" step="1"></div>
-                    <div class="form-group"><label>🎯 Take Profit %</label><input type="number" id="tpPercent" step="0.5" value="2.0"></div>
-                    <div class="form-group"><label>🛑 Stop Loss %</label><input type="number" id="slPercent" step="0.5" value="1.5"></div>
-                    <div class="form-group"><label>📊 ATR SL множник</label><input type="number" id="atrSlMultiplier" step="0.1" value="1.5"></div>
-                    <div class="form-group"><label>🎯 ATR TP множник</label><input type="number" id="atrTpMultiplier" step="0.1" value="2.5"></div>
-                    <div class="form-group"><label>📊 Мін. ADX</label><input type="number" id="minAdx" value="20"></div>
-                    <div class="form-group"><label>📊 Мін. Volume Ratio</label><input type="number" id="minVolumeRatio" step="0.1" value="1.2"></div>
-                    <div class="form-group"><label>📊 MACD тільки крос</label><input type="checkbox" id="macdCrossOnly"></div>
-                    <div class="form-group"><label>📊 Bollinger Bands</label><input type="checkbox" id="useBollinger"></div>
-                </div>
-                <h4 style="color:#667eea; margin-bottom:15px;">🛡️ Ризик-менеджмент</h4>
-                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:15px;margin-bottom:25px;">
-                    <div class="form-group"><label>⚠️ Ризик на угоду (%)</label><input type="number" id="riskPerTrade" step="0.5" value="2.0"></div>
-                    <div class="form-group"><label>📊 Макс. відкритих угод</label><input type="number" id="maxOpenTrades" value="3"></div>
-                    <div class="form-group"><label>📉 Макс. денний збиток (%)</label><input type="number" id="maxDailyLoss" step="0.5" value="5.0"></div>
-                    <div class="form-group"><label>🧠 Kelly Criterion</label><input type="checkbox" id="useKelly"></div>
-                </div>
-                <div style="display:flex;gap:10px;justify-content:flex-end; margin-top:20px;">
-                    <button class="btn btn-outline" onclick="loadSettings()">🔄 Скинути</button>
-                    <button class="btn btn-primary" onclick="saveSettings()">💾 Зберегти</button>
-                </div>
-            </div></div>
-        </div>
-
-        <!-- ЛОГИ -->
-        <div id="tab-logs" class="tab">
-            <div class="card"><div class="card-header"><h3>📜 Логи</h3><div style="display:flex;gap:10px;"><select id="logLevelFilter"><option value="">Всі</option><option value="INFO">INFO</option><option value="WARNING">WARNING</option><option value="ERROR">ERROR</option></select><button class="btn btn-outline btn-sm" onclick="loadLogs(true)">Оновити</button><button class="btn btn-danger btn-sm" onclick="clearLogs()">Очистити</button></div></div>
-                <div class="table-wrapper" style="max-height:500px;overflow-y:auto;"><table style="min-width:600px;"><thead><tr><th>Час</th><th>Рівень</th><th>Модуль</th><th>Повідомлення</th></tr></thead><tbody id="logsBody">...</tbody></table></div>
-                <div style="padding:15px;text-align:center;"><button class="btn btn-outline btn-sm" id="loadMoreBtn" onclick="loadMoreLogs()" style="display:none;">📥 Завантажити ще</button></div>
-            </div>
-        </div>
+    <div id="tab-forecasts" class="tab">
+        <div class="card"><div class="card-header"><h3>🎯 Прогнози</h3><span style="font-size:12px">Автоматичні сигнали</span></div>
+        <div class="forecast-tabs"><button class="forecast-tab-btn active" onclick="showForecastList('active')">🟢 Активні</button><button class="forecast-tab-btn" onclick="showForecastList('history')">📜 Історія</button><button class="btn btn-outline btn-sm" onclick="clearAllForecasts()">🗑️ Очистити</button></div>
+        <div id="activeForecastsList"><div class="table-wrapper"><table><thead><tr><th>Пара</th><th>Тип</th><th>Вхід</th><th>Ціль</th><th>Поточна</th><th>Прибуток</th><th>Впевн.</th><th>Час</th><th></th></tr></thead><tbody id="forecastsBody"><tr><td colspan="9">Завантаження...</td></tr></tbody></table></div></div>
+        <div id="historyForecastsList" class="hidden"><div class="table-wrapper"><table><thead><tr><th>Час</th><th>Пара</th><th>Тип</th><th>Вхід</th><th>Ціль</th><th>Результат</th><th></th></tr></thead><tbody id="forecastsHistoryBody"><tr><td colspan="7">Завантаження...</td></tr></tbody></table></div><div style="text-align:center;padding:10px"><button class="btn btn-outline btn-sm" id="loadMoreHistoryBtn" onclick="loadMoreHistory()" style="display:none">📥 Більше</button></div></div></div>
     </div>
 
-    <!-- Модальне вікно для графіку -->
-    <div id="tradeModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.95); z-index:2000; overflow:auto;">
-        <div style="position:relative; max-width:1400px; margin:20px auto; background:#1a1a2e; border-radius:20px; padding:20px;">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
-                <h3 id="tradeModalTitle">Угода / Прогноз</h3>
-                <button onclick="closeTradeModal()" style="background:#ff4757; border:none; color:white; font-size:20px; width:40px; height:40px; border-radius:50%; cursor:pointer;">✕</button>
-            </div>
-            <div id="tradeModalChart" style="height:600px;"></div>
-        </div>
+    <div id="tab-analysis" class="tab">
+        <div class="card"><div class="card-header"><h3>📊 Ринковий аналіз</h3><div><select id="analysisPair"><option value="BTCUSDT">BTCUSDT</option><option value="ETHUSDT">ETHUSDT</option><option value="SOLUSDT">SOLUSDT</option></select><button class="btn btn-primary btn-sm" onclick="loadAnalysis()">Аналіз</button></div></div><div id="analysisResult" style="padding:20px"><div style="text-align:center;color:#888">Виберіть пару</div></div></div>
+        <div class="card"><div class="card-header"><h3>📈 Графік</h3><div><select id="chartPair"><option value="BTCUSDT">BTCUSDT</option></select><select id="chartTimeframe"><option value="1h">1 год</option><option value="4h">4 год</option><option value="1d">1 день</option></select><button class="btn btn-primary btn-sm" onclick="loadChart()">Оновити</button><button class="btn btn-outline btn-sm" onclick="resetChartView()">Скинути</button></div></div><div class="chart-container" id="priceChart"></div></div>
+        <div class="card"><div class="card-header"><h3>📈 PnL динаміка</h3></div><div class="chart-container" id="pnlChart"></div></div>
     </div>
 
-    <div class="notification-permission" onclick="enableNotifications()">🔔 Увімкнути сповіщення</div>
-
-    <!-- Модальне вікно для графіку прогнозу -->
-    <div id="forecastModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.95); z-index:2000; overflow:auto;">
-        <div style="position:relative; max-width:1400px; margin:20px auto; background:#1a1a2e; border-radius:20px; padding:20px;">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
-                <h3 id="forecastModalTitle">Прогноз</h3>
-                <button onclick="closeForecastModal()" style="background:#ff4757; border:none; color:white; font-size:20px; width:40px; height:40px; border-radius:50%; cursor:pointer;">✕</button>
-            </div>
-            <div style="display:flex; gap:20px; flex-wrap:wrap;">
-                <div id="forecastModalChart" style="flex:2; min-width:300px; height:500px;"></div>
-                <div id="forecastModalDescription" style="flex:1; min-width:250px; background:rgba(15,20,40,0.8); border-radius:15px; padding:15px; overflow-y:auto; max-height:500px;">
-                    <h4>📋 Деталі прогнозу</h4>
-                    <div id="forecastDescContent" style="font-size:13px; line-height:1.6;"></div>
-                </div>
-            </div>
-        </div>
+    <div id="tab-patterns" class="tab">
+        <div class="card"><div class="card-header"><h3>📐 Фігури технічного аналізу</h3><div><select id="taPair"><option value="BTCUSDT">BTCUSDT</option><option value="ETHUSDT">ETHUSDT</option><option value="SOLUSDT">SOLUSDT</option></select><select id="taTimeframe"><option value="1h">1 год</option><option value="4h">4 год</option><option value="1d">1 день</option></select><button class="btn btn-primary btn-sm" onclick="loadTAPatterns()">🔍 Аналіз</button></div></div>
+        <div class="chart-container" id="taChart" style="min-height:500px"></div>
+        <div id="taInfo" style="padding:20px;border-top:1px solid rgba(102,126,234,0.2)"><div style="color:#888">Натисніть "Аналіз"</div></div></div>
     </div>
 
-    <script>
-    let ws = null;
-    let currentLogOffset = 0;
-    let hasMoreLogs = true;
-    let nextForecastTimer = null;
-    let notificationsEnabled = false;
-    let currentTradeId = null;
-    let currentTradeType = null;
-    let historyOffset = 0;
-    let hasMoreHistory = true;
-    let currentForecastList = 'active';
+    <div id="tab-settings" class="tab">
+        <div class="card"><div class="card-header"><h3>⚙️ Налаштування</h3></div><div style="padding:20px">
+            <h4 style="color:#667eea">📊 Торгівля</h4>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:15px;margin-bottom:20px">
+                <div class="form-group"><label>⏱️ Базовий таймфрейм</label><select id="baseTimeframe"><option value="1m">1хв</option><option value="5m">5хв</option><option value="15m">15хв</option><option value="1h">1год</option><option value="4h">4год</option><option value="1d">1д</option></select></div>
+                <div class="form-group"><label>📊 Торгові пари</label><select id="tradingPairsSelect" multiple size="6" style="height:150px"></select><small style="color:#666">Ctrl+вибір</small></div>
+                <div class="form-group"><label>🚀 Угоди за прогнозами</label><select id="createTradesFromForecasts"><option value="true">Увімкнено</option><option value="false">Вимкнено</option></select></div>
+                <div class="form-group"><label>💰 Розмір прогнозу</label><input type="range" id="forecastPositionPercent" min="1" max="100" value="8"><span id="forecastPositionPercentValue">8%</span></div>
+                <div class="form-group"><label>⏰ Тривалість прогнозу (год)</label><input type="number" id="forecastDurationHours" min="1" max="72" value="12"></div>
+            </div>
+            <h4 style="color:#667eea">📈 Стратегія</h4>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:15px;margin-bottom:20px">
+                <div class="form-group"><label>EMA Fast</label><input type="number" id="emaFast" value="21"></div>
+                <div class="form-group"><label>EMA Slow</label><input type="number" id="emaSlow" value="200"></div>
+                <div class="form-group"><label>RSI період</label><input type="number" id="rsiPeriod" value="14"></div>
+                <div class="form-group"><label>RSI min LONG</label><input type="number" id="rsiMinLong" value="40"></div>
+                <div class="form-group"><label>RSI max LONG</label><input type="number" id="rsiMaxLong" value="65"></div>
+                <div class="form-group"><label>RSI min SHORT</label><input type="number" id="rsiMinShort" value="35"></div>
+                <div class="form-group"><label>RSI max SHORT</label><input type="number" id="rsiMaxShort" value="60"></div>
+                <div class="form-group"><label>TP %</label><input type="number" id="tpPercent" step="0.5" value="2.0"></div>
+                <div class="form-group"><label>SL %</label><input type="number" id="slPercent" step="0.5" value="1.5"></div>
+                <div class="form-group"><label>ATR SL множник</label><input type="number" id="atrSlMultiplier" step="0.1" value="1.5"></div>
+                <div class="form-group"><label>ATR TP множник</label><input type="number" id="atrTpMultiplier" step="0.1" value="2.5"></div>
+                <div class="form-group"><label>Мін. ADX</label><input type="number" id="minAdx" value="20"></div>
+                <div class="form-group"><label>Мін. Volume Ratio</label><input type="number" id="minVolumeRatio" step="0.1" value="1.2"></div>
+                <div class="form-group"><label>MACD тільки крос</label><input type="checkbox" id="macdCrossOnly"></div>
+                <div class="form-group"><label>Bollinger Bands</label><input type="checkbox" id="useBollinger"></div>
+            </div>
+            <h4 style="color:#667eea">🛡️ Ризик</h4>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:15px;margin-bottom:20px">
+                <div class="form-group"><label>Ризик на угоду (%)</label><input type="number" id="riskPerTrade" step="0.5" value="2.0"></div>
+                <div class="form-group"><label>Макс. відкритих угод</label><input type="number" id="maxOpenTrades" value="3"></div>
+                <div class="form-group"><label>Макс. денний збиток (%)</label><input type="number" id="maxDailyLoss" step="0.5" value="5.0"></div>
+                <div class="form-group"><label>Kelly Criterion</label><input type="checkbox" id="useKelly"></div>
+            </div>
+            <div style="display:flex;gap:10px;justify-content:flex-end"><button class="btn btn-outline" onclick="loadSettings()">Скинути</button><button class="btn btn-primary" onclick="saveSettings()">Зберегти</button></div>
+        </div></div>
+    </div>
 
-    function connectWebSocket() {
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
-        ws.onmessage = function(event) {
-            const data = JSON.parse(event.data);
-            if (data.type === 'status') {
-                updateDashboard(data);
-                if (data.next_forecast) updateNextForecastTimer(data.next_forecast);
+    <div id="tab-logs" class="tab">
+        <div class="card"><div class="card-header"><h3>📜 Логи</h3><div><select id="logLevelFilter"><option value="">Всі</option><option value="INFO">INFO</option><option value="WARNING">WARNING</option><option value="ERROR">ERROR</option></select><button class="btn btn-outline btn-sm" onclick="loadLogs(true)">Оновити</button><button class="btn btn-danger btn-sm" onclick="clearLogs()">Очистити</button></div></div>
+        <div class="table-wrapper" style="max-height:500px;overflow-y:auto"><table style="min-width:600px"><thead><tr><th>Час</th><th>Рівень</th><th>Модуль</th><th>Повідомлення</th></tr></thead><tbody id="logsBody">...</tbody></table></div>
+        <div style="text-align:center;padding:10px"><button class="btn btn-outline btn-sm" id="loadMoreBtn" onclick="loadMoreLogs()" style="display:none">📥 Більше</button></div></div>
+    </div>
+
+    <div id="tab-backtest" class="tab">
+        <div class="card"><div class="card-header"><h3>🔄 Бектестер</h3></div><div style="padding:20px">
+            <div class="backtest-params-grid">
+                <div class="form-group"><label>📊 Пара</label><select id="backtestSymbol"><option value="BTCUSDT">BTCUSDT</option></select></div>
+                <div class="form-group"><label>⏱️ Таймфрейм</label><select id="backtestTimeframe"><option value="5m">5хв</option><option value="15m" selected>15хв</option><option value="1h">1год</option><option value="4h">4год</option></select></div>
+                <div class="form-group"><label>📅 Дата початку</label><input type="date" id="backtestStartDate"></div>
+                <div class="form-group"><label>📅 Дата кінця</label><input type="date" id="backtestEndDate"></div>
+                <div class="form-group"><label>💰 Початковий баланс</label><input type="number" id="backtestBalance" value="100"></div>
+                <div class="form-group"><label>⚠️ Ризик на угоду</label><input type="number" id="backtestRisk" value="2" step="0.5"></div>
+            </div>
+            <div style="display:flex;gap:10px;justify-content:center"><button class="btn btn-primary" onclick="runBacktest()">▶️ Запустити</button><button class="btn btn-outline" onclick="clearBacktestResults()">Очистити</button><button class="btn btn-success" onclick="exportBacktestResults()">📥 Експорт</button></div>
+            <div id="backtestProgress" style="display:none;margin-top:15px"><div class="progress-bar-container"><div class="progress-bar" id="backtestProgressBar"></div></div><div id="backtestProgressText" style="text-align:center;font-size:12px">Завантаження...</div></div>
+        </div></div>
+        <div id="backtestResults" style="display:none"><div class="metrics-grid" id="backtestMetrics"></div><div class="card"><div class="card-header"><h3>📈 Equity Curve</h3></div><div class="chart-container" id="backtestEquityChart"></div></div><div class="card"><div class="card-header"><h3>📊 Розподіл PnL</h3></div><div class="chart-container" id="backtestDistributionChart"></div></div><div class="card"><div class="card-header"><h3>📜 Угоди</h3></div><div class="table-wrapper"><table><thead><tr><th>Вхід</th><th>Вихід</th><th>Сторона</th><th>Вхід($)</th><th>Вихід($)</th><th>PnL</th><th>PnL%</th></tr></thead><tbody id="backtestTradesBody"></tbody></table></div></div></div>
+        <div id="backtestError" style="display:none;background:#ff4757;border-radius:10px;padding:15px;text-align:center"></div>
+    </div>
+
+    <div id="tab-news" class="tab">
+        <div class="card"><div class="card-header"><h3>📰 Торгівля за новинами</h3><div><span id="newsBalanceValue" class="strategy-balance">$100</span><button class="btn btn-outline btn-sm" onclick="resetNewsStrategy()">🔄 Скинути</button></div></div><div style="padding:20px"><div class="stats-grid" id="newsStats"></div></div></div>
+        <div class="card"><div class="card-header"><h3>📜 Історія угод</h3></div><div class="table-wrapper"><table><thead><tr><th>Вхід</th><th>Вихід</th><th>Новина</th><th>Пара</th><th>Сторона</th><th>Вхід($)</th><th>Вихід($)</th><th>PnL</th><th>Статус</th></tr></thead><tbody id="newsTradesBody"><tr><td colspan="9">Завантаження...</td></tr></tbody></table></div></div>
+    </div>
+
+    <div id="tab-listings" class="tab">
+        <div class="card"><div class="card-header"><h3>🆕 Нові монети</h3><div><span id="listingBalanceValue" class="strategy-balance">$100</span><button class="btn btn-outline btn-sm" onclick="resetListingStrategy()">🔄 Скинути</button></div></div><div style="padding:20px"><div class="stats-grid" id="listingStats"></div></div></div>
+        <div class="card"><div class="card-header"><h3>🟢 Активні позиції</h3></div><div class="table-wrapper"><table><thead><tr><th>Монета</th><th>Пара</th><th>Вхід</th><th>Кількість</th><th>Сума</th></tr></thead><tbody id="listingOpenTradesBody"><tr><td colspan="5">Немає активних позицій</td></tr></tbody></table></div></div>
+        <div class="card"><div class="card-header"><h3>📜 Історія угод</h3></div><div class="table-wrapper"><table><thead><tr><th>Вхід</th><th>Вихід</th><th>Монета</th><th>Вхід($)</th><th>Вихід($)</th><th>PnL</th><th>Причина</th></tr></thead><tbody id="listingTradesBody"><tr><td colspan="7">Завантаження...</td></tr></tbody></table></div></div>
+    </div>
+</div>
+
+<div id="tradeModal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.95);z-index:2000;overflow:auto"><div style="max-width:1400px;margin:20px auto;background:#1a1a2e;border-radius:20px;padding:20px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:15px"><h3 id="tradeModalTitle">Угода</h3><div><select id="tradeChartTimeframe"><option value="5m">5хв</option><option value="15m">15хв</option><option value="1h" selected>1год</option><option value="4h">4год</option><option value="1d">1день</option></select><button onclick="closeTradeModal()" style="background:#ff4757;border:none;color:white;width:40px;height:40px;border-radius:50%;cursor:pointer;margin-left:10px">✕</button></div></div><div id="tradeModalChart" style="height:600px"></div></div></div>
+<div id="forecastModal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.95);z-index:2000;overflow:auto"><div style="max-width:1400px;margin:20px auto;background:#1a1a2e;border-radius:20px;padding:20px"><div style="display:flex;justify-content:space-between"><h3 id="forecastModalTitle">Прогноз</h3><button onclick="closeForecastModal()" style="background:#ff4757;border:none;color:white;width:40px;height:40px;border-radius:50%;cursor:pointer">✕</button></div><div style="display:flex;gap:20px;flex-wrap:wrap"><div id="forecastModalChart" style="flex:2;min-width:300px;height:500px"></div><div id="forecastModalDescription" style="flex:1;min-width:250px;background:rgba(15,20,40,0.8);border-radius:15px;padding:15px;overflow-y:auto"><h4>📋 Деталі</h4><div id="forecastDescContent" style="font-size:13px"></div></div></div></div></div>
+<div class="notification-permission" onclick="enableNotifications()">🔔 Сповіщення</div>
+
+<script>
+let ws=null,currentLogOffset=0,hasMoreLogs=true,nextForecastTimer=null,notificationsEnabled=false,currentTradeId=null,currentTradeType=null,historyOffset=0,hasMoreHistory=true,currentForecastList='active',backtestRunning=false,backtestResultsData=null,patternsUpdateInterval=null;
+
+function connectWebSocket(){const p=location.protocol==='https:'?'wss:':'ws:';ws=new WebSocket(`${p}//${location.host}/ws`);ws.onmessage=e=>{const d=JSON.parse(e.data);if(d.type==='status'){updateDashboard(d);if(d.next_forecast)updateNextForecastTimer(d.next_forecast);}if(d.type==='new_forecast'){loadForecasts();loadForecastsHistory(true);}};ws.onclose=()=>setTimeout(connectWebSocket,3000);}
+function getCurrentPrice(p){return fetch(`/api/current_price/${p}`).then(r=>r.json()).then(d=>d.price||40000).catch(e=>40000);}
+function updateDashboard(d){document.getElementById('balance').innerHTML=`$${(d.balance||0).toFixed(2)}`;document.getElementById('lockedAmount').innerHTML=`$${(d.locked_amount||0).toFixed(2)}`;document.getElementById('openTrades').innerHTML=d.open_trades||0;const t=document.getElementById('totalPnL');if(t)t.innerHTML=(d.total_pnl||0)>=0?`<span class="positive">+$${(d.total_pnl||0).toFixed(2)}</span>`:`<span class="negative">-$${Math.abs(d.total_pnl||0).toFixed(2)}</span>`;const w=document.getElementById('winRate');if(w)w.innerHTML=`${(d.win_rate||0).toFixed(1)}%`;const dp=document.getElementById('dailyPnL');if(dp)dp.innerHTML=(d.daily_pnl||0)>=0?`<span class="positive">+$${(d.daily_pnl||0).toFixed(2)}</span>`:`<span class="negative">-$${Math.abs(d.daily_pnl||0).toFixed(2)}</span>`;document.getElementById('totalTrades').innerHTML=d.total_trades||0;if(d.next_forecast)updateNextForecastTimer(d.next_forecast);if(d.server_time)document.getElementById('serverTime').innerHTML=`🕐 ${new Date(d.server_time).toLocaleString('uk-UA')}`;loadAdvancedStats();}
+function updateNextForecastTimer(t){if(nextForecastTimer)clearInterval(nextForecastTimer);function u(){const diff=new Date(t)-new Date();if(diff<=0){document.getElementById('nextForecastTimer').innerHTML='00:00:00';clearInterval(nextForecastTimer);fetch('/api/status').then(r=>r.json()).then(d=>{if(d.next_forecast)updateNextForecastTimer(d.next_forecast);});return;}document.getElementById('nextForecastTimer').innerHTML=`${Math.floor(diff/3600000).toString().padStart(2,'0')}:${Math.floor((diff%3600000)/60000).toString().padStart(2,'0')}:${Math.floor((diff%60000)/1000).toString().padStart(2,'0')}`;}u();nextForecastTimer=setInterval(u,1000);}
+function showForecastList(t){currentForecastList=t;const btns=document.querySelectorAll('.forecast-tab-btn');btns.forEach(b=>b.classList.remove('active'));if(event&&event.target)event.target.classList.add('active');else if(btns.length)btns[0].classList.add('active');document.getElementById('activeForecastsList').classList.toggle('hidden',t!=='active');document.getElementById('historyForecastsList').classList.toggle('hidden',t!=='history');if(t==='history')loadForecastsHistory(true);}
+async function loadDashboard(){
+    try{
+        const s=await fetch('/api/status').then(r=>r.json());
+        updateDashboard(s);
+        const l=await fetch('/api/locked_amount').then(r=>r.json());
+        document.getElementById('lockedAmount').innerHTML=`$${(l.locked_amount||0).toFixed(2)}`;
+        const o=await fetch('/api/open_trades').then(r=>r.json());
+        const ob=document.getElementById('openTradesBody');
+        if(ob&&o.length){
+            const p={};
+            for(const t of o)if(!p[t.pair]){
+                const pr=await fetch(`/api/current_price/${t.pair}`).then(r=>r.json());
+                p[t.pair]=pr.price||t.entry_price;
             }
-            if (data.type === 'new_forecast') { loadForecasts(); loadForecastsHistory(true); }
-        };
-        ws.onclose = function() { setTimeout(connectWebSocket, 3000); };
-    }
+            ob.innerHTML=o.map(t=>{
+                const cp=p[t.pair]||t.entry_price;
+                const pnl=t.side==='BUY'?(cp-t.entry_price)*t.quantity:(t.entry_price-cp)*t.quantity;
+                const pnlP=((cp-t.entry_price)/t.entry_price)*100;
+                return `<tr onclick="showTradeOnChart(${t.id})">
+                    <td>${t.pair}</td>
+                    <td><span class="badge ${t.side==='BUY'?'badge-long':'badge-short'}">${t.side==='BUY'?'LONG':'SHORT'}</span></td>
+                    <td>$${t.entry_price.toFixed(0)}</td>
+                    <td>${t.quantity}</td>
+                    <td>$${(t.take_profit||0).toFixed(0)}</td>
+                    <td>$${(t.stop_loss||0).toFixed(0)}</td>
+                    <td class="${pnl>=0?'positive':'negative'}">${pnl>=0?'+':''}$${pnl.toFixed(2)} (${pnlP.toFixed(1)}%)</td>
+                    <td><button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); closeTrade(${t.id})">🔴</button></td>
+                 </tr>`;
+            }).join('');
+        } else if(ob){ ob.innerHTML='<tr><td colspan="8">Немає позицій</td></tr>'; }
+        const tr=await fetch('/api/trades?limit=20').then(r=>r.json());
+        const tb=document.getElementById('tradesBody');
+        if(tb&&tr.length){
+            tb.innerHTML=tr.map(t=>`<tr onclick="showTradeOnChart(${t.id})"><td style="white-space:nowrap;">${t.opened_at?.replace('T',' ').substring(0,16)}</td><td>${t.pair}</td><td><span class="badge ${t.side==='BUY'?'badge-long':'badge-short'}">${t.side==='BUY'?'КУПІВЛЯ':'ПРОДАЖ'}</span></td><td>$${t.entry_price?.toFixed(0)}</td><td>${t.exit_price?'$'+t.exit_price.toFixed(0):'-'}</td><td class="${t.pnl>=0?'positive':'negative'}">${t.pnl>=0?'+':''}$${(t.pnl||0).toFixed(2)} (${(t.pnl_percent||0).toFixed(1)}%)</td></tr>`).join('');
+        } else if(tb){ tb.innerHTML='<tr><td colspan="6">Немає угод</td></tr>'; }
+        loadEquityChart();
+    } catch(e){ console.error('Помилка loadDashboard:', e); }
+}
+async function loadForecasts(){try{const f=await fetch('/api/forecasts').then(r=>r.json());const b=document.getElementById('forecastsBody');if(b&&f.length){b.innerHTML=f.map(fc=>{let pnl=0,pnlP=0;if(fc.signal_type==='LONG'){pnlP=((fc.current_price-fc.entry_price)/fc.entry_price)*100;pnl=(pnlP/100)*(fc.position_usdt||10);}else{pnlP=((fc.entry_price-fc.current_price)/fc.entry_price)*100;pnl=(pnlP/100)*(fc.position_usdt||10);}const h=Math.floor(fc.time_remaining/3600),m=Math.floor((fc.time_remaining%3600)/60);return `<tr onclick="showForecastOnChart(${fc.id})"><td>${fc.pair}</td><td><span class="badge ${fc.signal_type==='LONG'?'badge-long':'badge-short'}">${fc.signal_type==='LONG'?'📈 LONG':'📉 SHORT'}</span></td><td>$${fc.entry_price.toFixed(0)}</td><td>$${fc.target_price.toFixed(0)}</td><td>$${fc.current_price.toFixed(0)}</td><td class="${pnlP>=0?'positive':'negative'}">${pnlP>=0?'+':''}$${pnl.toFixed(2)} (${pnlP.toFixed(1)}%)</td><td>${fc.confidence.toFixed(1)}%</td><td class="timer" data-expires="${fc.expires_at}">${h}г ${m}хв</td><td><button class="btn btn-outline btn-sm" onclick="event.stopPropagation(); deleteForecast(${fc.id})">🗑️</button></td></tr>`;}).join('');startTimers();}else b&&(b.innerHTML='<tr><td colspan="9">Немає прогнозів</td></tr>');}catch(e){console.error(e);}}
+function startTimers(){document.querySelectorAll('.timer[data-expires]').forEach(el=>{if(el.hasAttribute('data-timer-set'))return;el.setAttribute('data-timer-set','true');const ex=new Date(el.dataset.expires);const iv=setInterval(()=>{const rem=(ex-new Date())/1000;if(rem<=0){clearInterval(iv);el.innerHTML='Завершено';loadForecasts();}else{const h=Math.floor(rem/3600),m=Math.floor((rem%3600)/60);el.innerHTML=`${h}г ${m}хв`;}},1000);});}
+async function loadForecastsHistory(r=true){if(r){historyOffset=0;hasMoreHistory=true;document.getElementById('loadMoreHistoryBtn').style.display='none';}try{const res=await fetch(`/api/forecasts/history?limit=30&offset=${historyOffset}`);const d=await res.json();const b=document.getElementById('forecastsHistoryBody');if(!b)return;if(!d.forecasts?.length&&historyOffset===0){b.innerHTML='<tr><td colspan="7">Немає прогнозів</td></tr>';return;}const rows=d.forecasts.map(f=>`<tr onclick="showForecastOnChart(${f.id})"><td>${f.created_at.substring(0,16)}</td><td>${f.pair}</td><td><span class="badge ${f.signal_type==='LONG'?'badge-long':'badge-short'}">${f.signal_type==='LONG'?'📈 LONG':'📉 SHORT'}</span></td><td>$${f.entry_price.toFixed(0)}</td><td>$${f.target_price.toFixed(0)}</td><td class="${f.result_text.includes('+')?'positive':'negative'}">${f.result_text}</td><td><button class="btn btn-outline btn-sm" onclick="event.stopPropagation(); showForecastOnChart(${f.id})">📊</button></td></tr>`).join('');b.innerHTML=r?rows:b.innerHTML+rows;hasMoreHistory=d.forecasts?.length===30;document.getElementById('loadMoreHistoryBtn').style.display=hasMoreHistory?'inline-block':'none';historyOffset+=d.forecasts?.length||0;}catch(e){console.error(e);}}
+async function loadMoreHistory(){if(hasMoreHistory)await loadForecastsHistory(false);}
+async function loadAnalysis(){const p=document.getElementById('analysisPair').value;const d=await fetch(`/api/analysis/${p}`).then(r=>r.json());const c=document.getElementById('analysisResult');if(d.error){c.innerHTML=`<div style="color:#ff4757;">${d.error}</div>`;return;}c.innerHTML=`<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:15px;"><div class="metric-card"><div class="metric-value">$${(d.current_price||0).toFixed(2)}</div><div class="metric-label">Ціна</div></div><div class="metric-card"><div class="metric-value" style="color:${d.trend==='📈 ВИСХІДНИЙ'?'#00ff88':'#ff4757'}">${d.trend||'Нейтральний'}</div><div class="metric-label">Тренд</div></div><div class="metric-card"><div class="metric-value">${d.rsi||50}</div><div class="metric-label">RSI</div></div><div class="metric-card"><div class="metric-value">${d.macd_cross==='bullish'?'🟢 БИЧЯЧИЙ':(d.macd_cross==='bearish'?'🔴 ВЕДМЕЖИЙ':'НЕЙТРАЛЬНО')}</div><div class="metric-label">MACD</div></div></div>${d.forecast?`<div style="margin-top:20px;background:linear-gradient(135deg,rgba(102,126,234,0.2),rgba(118,75,162,0.2));border-radius:15px;padding:20px;text-align:center;"><div style="font-size:28px;font-weight:700;color:${d.forecast==='LONG'?'#00ff88':'#ff4757'}">${d.forecast}</div><div>Ціль: $${(d.target_price||0).toFixed(2)}</div><div>Впевненість: ${d.confidence||0}%</div></div>`:'<div style="margin-top:20px;text-align:center;color:#888;">⚠️ Немає сигналу</div>'}`;}
+async function loadChart(){const p=document.getElementById('chartPair').value;const t=document.getElementById('chartTimeframe').value;try{const res=await fetch(`/api/chart/${p}?timeframe=${t}&limit=200`);const d=await res.json();Plotly.newPlot('priceChart',d.data,d.layout||{},{responsive:true});}catch(e){document.getElementById('priceChart').innerHTML='<div style="text-align:center;padding:50px;">Помилка</div>';}}
+function resetChartView(){Plotly.relayout('priceChart',{'xaxis.autorange':true,'yaxis.autorange':true});}
+async function loadPnlChart(){try{const r=await fetch('/api/chart/pnl');const d=await r.json();Plotly.newPlot('pnlChart',d.data,d.layout||{},{responsive:true});}catch(e){}}
+async function loadEquityChart(){try{const r=await fetch('/api/chart/equity');const d=await r.json();Plotly.newPlot('equityChart',d.data,d.layout||{},{responsive:true});}catch(e){}}
+async function loadTAPatterns(){const p=document.getElementById('taPair').value;const t=document.getElementById('taTimeframe').value;document.getElementById('taChart').innerHTML='<div style="text-align:center;padding:50px;">🔄 Завантаження...</div>';try{const r=await fetch(`/api/chart_patterns/${p}?timeframe=${t}&limit=300`);const d=await r.json();Plotly.newPlot('taChart',d.data,d.layout||{},{responsive:true});document.getElementById('taInfo').innerHTML='<div style="color:#00ff88;">✅ Фігури відображено</div><div style="font-size:12px;color:#888;">Оновлення через 30с</div>';}catch(e){document.getElementById('taChart').innerHTML='<div style="text-align:center;padding:50px;color:#ff4757;">❌ Помилка</div>';}}
+function startPatternsAutoUpdate(){if(patternsUpdateInterval)clearInterval(patternsUpdateInterval);patternsUpdateInterval=setInterval(()=>{if(document.getElementById('tab-patterns').classList.contains('active'))loadTAPatterns();},30000);}
+function stopPatternsAutoUpdate(){if(patternsUpdateInterval){clearInterval(patternsUpdateInterval);patternsUpdateInterval=null;}}
+async function showTradeOnChart(id){openTradeModal();document.getElementById('tradeModalChart').innerHTML='<div style="text-align:center;padding:50px;">🔄 Завантаження...</div>';const tf=document.getElementById('tradeChartTimeframe').value;try{const r=await fetch(`/api/trade/chart/${id}?timeframe=${tf}`);const d=await r.json();Plotly.newPlot('tradeModalChart',d.data,d.layout||{},{responsive:true});currentTradeId=id;currentTradeType='trade';const tr=await fetch('/api/trades?limit=100').then(r=>r.json());const t=tr.find(t=>t.id===id);if(t)document.getElementById('tradeModalTitle').innerHTML=`📊 Угода ${t.pair} | ${t.side==='BUY'?'LONG':'SHORT'} | Вхід: $${t.entry_price}`;}catch(e){document.getElementById('tradeModalChart').innerHTML='<div style="text-align:center;padding:50px;color:#ff4757;">❌ Помилка</div>';}}
+async function showForecastOnChart(id){openForecastModal();document.getElementById('forecastModalChart').innerHTML='<div style="text-align:center;padding:50px;">🔄 Завантаження...</div>';document.getElementById('forecastDescContent').innerHTML='<div style="text-align:center;color:#888;">Завантаження...</div>';try{const info=await fetch(`/api/forecast/info/${id}`).then(r=>r.json());document.getElementById('forecastModalTitle').innerHTML=`📈 Прогноз ${info.pair} | ${info.signal_type} | Вхід: $${info.entry_price} | Ціль: $${info.target_price}`;currentTradeId=id;currentTradeType='forecast';if(info.description){let dh=info.description;dh=dh.split('**').map((p,i)=>i%2===1?`<strong>${p}</strong>`:p).join('');dh=dh.replace(/• /g,'<span style="color:#667eea;">•</span> ');dh=dh.replace(/\n/g,'<br>');document.getElementById('forecastDescContent').innerHTML=dh;}else document.getElementById('forecastDescContent').innerHTML='<div style="color:#888;">Опис відсутній</div>';const tf=document.getElementById('tradeChartTimeframe').value;const r=await fetch(`/api/forecast/chart/${id}?timeframe=${tf}`);const d=await r.json();Plotly.newPlot('forecastModalChart',d.data,d.layout||{},{responsive:true});}catch(e){console.error(e);document.getElementById('forecastModalChart').innerHTML='<div style="text-align:center;padding:50px;color:#ff4757;">❌ Помилка</div>';document.getElementById('forecastDescContent').innerHTML='<div style="text-align:center;color:#ff4757;">❌ Помилка</div>';}}
+function openTradeModal(){document.getElementById('tradeModal').style.display='block';document.body.style.overflow='hidden';}
+function closeTradeModal(){document.getElementById('tradeModal').style.display='none';document.body.style.overflow='auto';currentTradeId=null;}
+function openForecastModal(){document.getElementById('forecastModal').style.display='block';document.body.style.overflow='hidden';}
+function closeForecastModal(){document.getElementById('forecastModal').style.display='none';document.body.style.overflow='auto';}
+document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeTradeModal();closeForecastModal();}});
+async function loadAdvancedStats(){try{const r=await fetch('/api/stats/advanced');const d=await r.json();if(!d.error){document.getElementById('profitFactor').innerHTML=d.profit_factor;document.getElementById('maxDrawdown').innerHTML=`$${d.max_drawdown}`;document.getElementById('avgPnL').innerHTML=d.avg_win?`+$${d.avg_win.toFixed(2)}`:'$0';document.getElementById('kelly').innerHTML=`${d.kelly_criterion}%`;}}catch(e){}}
+async function loadSettings(){try{const s=await fetch('/api/settings').then(r=>r.json());document.getElementById('baseTimeframe').value=s.trading?.base_timeframe||'15m';document.getElementById('emaFast').value=s.strategy?.ema_fast||21;document.getElementById('emaSlow').value=s.strategy?.ema_slow||200;document.getElementById('rsiPeriod').value=s.strategy?.rsi_period||14;document.getElementById('rsiMinLong').value=s.strategy?.rsi_min_long||40;document.getElementById('rsiMaxLong').value=s.strategy?.rsi_max_long||65;document.getElementById('rsiMinShort').value=s.strategy?.rsi_min_short||35;document.getElementById('rsiMaxShort').value=s.strategy?.rsi_max_short||60;document.getElementById('tpPercent').value=s.strategy?.take_profit_percent||2.0;document.getElementById('slPercent').value=s.strategy?.stop_loss_percent||1.5;document.getElementById('atrSlMultiplier').value=s.strategy?.atr_sl_multiplier||1.5;document.getElementById('atrTpMultiplier').value=s.strategy?.atr_tp_multiplier||2.5;document.getElementById('minAdx').value=s.strategy?.min_adx||20;document.getElementById('minVolumeRatio').value=s.strategy?.min_volume_ratio||1.2;document.getElementById('riskPerTrade').value=s.risk?.risk_per_trade||2.0;document.getElementById('maxOpenTrades').value=s.risk?.max_open_trades||3;document.getElementById('maxDailyLoss').value=s.risk?.max_daily_loss||5.0;document.getElementById('macdCrossOnly').checked=!!s.strategy?.macd_cross_only;document.getElementById('useBollinger').checked=!!s.strategy?.use_bollinger;document.getElementById('useKelly').checked=!!s.risk?.use_kelly;const t=await fetch('/api/settings/testing').then(r=>r.json());document.getElementById('createTradesFromForecasts').value=t.create_trades_from_forecasts?'true':'false';document.getElementById('forecastPositionPercent').value=t.forecast_position_percent||8;document.getElementById('forecastPositionPercentValue').innerHTML=(t.forecast_position_percent||8)+'%';const d=await fetch('/api/settings/forecast_duration').then(r=>r.json());document.getElementById('forecastDurationHours').value=d.forecast_duration_hours||12;await loadTradingPairs();}catch(e){console.error(e);}}
+async function saveSettings(){const s={trading:{base_timeframe:document.getElementById('baseTimeframe').value},strategy:{ema_fast:parseInt(document.getElementById('emaFast').value),ema_slow:parseInt(document.getElementById('emaSlow').value),rsi_period:parseInt(document.getElementById('rsiPeriod').value),rsi_min_long:parseInt(document.getElementById('rsiMinLong').value),rsi_max_long:parseInt(document.getElementById('rsiMaxLong').value),rsi_min_short:parseInt(document.getElementById('rsiMinShort').value),rsi_max_short:parseInt(document.getElementById('rsiMaxShort').value),take_profit_percent:parseFloat(document.getElementById('tpPercent').value),stop_loss_percent:parseFloat(document.getElementById('slPercent').value),atr_sl_multiplier:parseFloat(document.getElementById('atrSlMultiplier').value),atr_tp_multiplier:parseFloat(document.getElementById('atrTpMultiplier').value),min_adx:parseInt(document.getElementById('minAdx').value),min_volume_ratio:parseFloat(document.getElementById('minVolumeRatio').value),macd_cross_only:document.getElementById('macdCrossOnly').checked,use_bollinger:document.getElementById('useBollinger').checked},risk:{risk_per_trade:parseFloat(document.getElementById('riskPerTrade').value),max_open_trades:parseInt(document.getElementById('maxOpenTrades').value),max_daily_loss:parseFloat(document.getElementById('maxDailyLoss').value),use_kelly:document.getElementById('useKelly').checked}};try{await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(s)});const ct=document.getElementById('createTradesFromForecasts').value==='true';const fp=parseFloat(document.getElementById('forecastPositionPercent').value);await fetch('/api/settings/testing',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({create_trades_from_forecasts:ct,forecast_position_percent:fp})});const fd=parseInt(document.getElementById('forecastDurationHours').value);await fetch('/api/settings/forecast_duration',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({forecast_duration_hours:fd})});if(window.selectedPairs&&window.selectedPairs.length)await fetch('/api/trading_pairs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pairs:window.selectedPairs})});alert('Налаштування збережено!');}catch(e){alert('Помилка: '+e.message);}}
+async function loadTradingPairs(){try{const d=await fetch('/api/trading_pairs').then(r=>r.json());const s=document.getElementById('tradingPairsSelect');if(s){s.innerHTML=d.available_pairs.map(p=>`<option value="${p}" ${d.current_pairs.includes(p)?'selected':''}>${p}</option>`).join('');window.selectedPairs=[...d.current_pairs];}['analysisPair','chartPair','taPair'].forEach(id=>{const sel=document.getElementById(id);if(sel){const cv=sel.value;sel.innerHTML=d.current_pairs.map(p=>`<option value="${p}" ${p===cv?'selected':''}>${p}</option>`).join('');}});const bs=document.getElementById('backtestSymbol');if(bs&&d.current_pairs.length>0)bs.innerHTML=d.current_pairs.map(p=>`<option value="${p}">${p}</option>`).join('');}catch(e){console.error(e);}}
+function updatePairsSelection(){const s=document.getElementById('tradingPairsSelect');if(s)window.selectedPairs=Array.from(s.selectedOptions).map(o=>o.value);}
+document.getElementById('tradingPairsSelect')?.addEventListener('change',updatePairsSelection);
+document.getElementById('forecastPositionPercent')?.addEventListener('input',function(){document.getElementById('forecastPositionPercentValue').innerHTML=this.value+'%';});
+async function loadLogs(r=true){if(r){currentLogOffset=0;hasMoreLogs=true;document.getElementById('loadMoreBtn').style.display='none';}const l=document.getElementById('logLevelFilter').value;const res=await fetch(`/api/logs?level=${l}&limit=50&offset=${currentLogOffset}`);const d=await res.json();const b=document.getElementById('logsBody');if(!b)return;if(!d.logs?.length&&currentLogOffset===0){b.innerHTML='<tr><td colspan="4">Немає логів</td></tr>';return;}const rows=d.logs.map(l=>`<tr><td style="white-space:nowrap;">${new Date(l.timestamp).toLocaleString()}</td><td class="log-${l.level.toLowerCase()}">${l.level}</td><td>${l.module||'-'}</td><td>${l.message}</td></tr>`).join('');b.innerHTML=r?rows:b.innerHTML+rows;hasMoreLogs=d.logs?.length===50;document.getElementById('loadMoreBtn').style.display=hasMoreLogs?'inline-block':'none';currentLogOffset+=d.logs?.length||0;}
+async function loadMoreLogs(){if(hasMoreLogs)await loadLogs(false);}
+async function clearLogs(){if(confirm('Очистити логи?')){await fetch('/api/logs',{method:'DELETE'});loadLogs(true);}}
+async function closeAllTrades(){if(!confirm("Закрити всі позиції?"))return;const t=await fetch('/api/open_trades').then(r=>r.json());let c=0;for(const tr of t){const p=await getCurrentPrice(tr.pair);const r=await fetch(`/api/trade/close/${tr.id}?price=${p}`,{method:'POST'});const d=await r.json();if(d.pnl!==undefined)c++;}alert(`Закрито ${c} позицій`);loadDashboard();}
+async function closeTrade(id){if(confirm('Закрити угоду?')){const p=await getCurrentPrice('BTCUSDT');const r=await fetch(`/api/trade/close/${id}?price=${p}`,{method:'POST'});const d=await r.json();if(d.pnl!==undefined){alert(`Закрито! PnL: ${d.pnl>=0?'+':''}$${d.pnl.toFixed(2)}`);loadDashboard();}}}
+async function deleteForecast(id){await fetch(`/api/forecast/${id}`,{method:'DELETE'});loadForecasts();if(currentForecastList==='history')loadForecastsHistory(true);}
+async function clearAllForecasts(){if(confirm('Очистити всі прогнози?')){await fetch('/api/forecasts/all',{method:'DELETE'});loadForecasts();loadForecastsHistory(true);}}
+async function enableNotifications(){const p=await Notification.requestPermission();notificationsEnabled=p==='granted';if(notificationsEnabled){document.querySelector('.notification-permission').style.display='none';alert('Сповіщення увімкнено');}}
 
-    function getCurrentPrice(pair) { return fetch(`/api/current_price/${pair}`).then(r=>r.json()).then(d=>d.price||40000).catch(e=>40000); }
+async function loadNewsData(){try{const b=await fetch('/api/news/balance').then(r=>r.json());document.getElementById('newsBalanceValue').innerHTML=`$${(b.balance||100).toFixed(2)}`;document.getElementById('newsStats').innerHTML=`<div class="stat-card"><div class="stat-value">$${(b.balance||100).toFixed(2)}</div><div class="stat-label">Баланс</div></div><div class="stat-card"><div class="stat-value ${(b.total_pnl||0)>=0?'positive':'negative'}">${(b.total_pnl||0)>=0?'+':''}$${(b.total_pnl||0).toFixed(2)}</div><div class="stat-label">Загальний PnL</div></div><div class="stat-card"><div class="stat-value">${b.total_trades||0}</div><div class="stat-label">Всього угод</div></div><div class="stat-card"><div class="stat-value ${(b.win_rate||0)>=50?'positive':'negative'}">${b.win_rate||0}%</div><div class="stat-label">Win Rate</div></div>`;const t=await fetch('/api/news/trades').then(r=>r.json());const tb=document.getElementById('newsTradesBody');if(tb&&t.length)tb.innerHTML=t.map(tr=>`<tr><td>${new Date(tr.entry_time).toLocaleString()}</td><td>${tr.exit_time?new Date(tr.exit_time).toLocaleString():'-'}</td><td title="${tr.title}">${tr.title?.substring(0,50)||'-'}...</td><td>${tr.pair}</td><td><span class="badge ${tr.side==='LONG'?'badge-long':'badge-short'}">${tr.side}</span></td><td>$${tr.entry_price.toFixed(2)}</td><td>${tr.exit_price?'$'+tr.exit_price.toFixed(2):'-'}</td><td class="${(tr.pnl||0)>=0?'positive':'negative'}">${(tr.pnl||0)>=0?'+':''}$${(tr.pnl||0).toFixed(2)} (${(tr.pnl_percent||0).toFixed(1)}%)</td><td><span class="badge ${tr.status==='open'?'badge-active':'badge-expired'}">${tr.status==='open'?'Відкрита':'Закрита'}</span></td></tr>`).join('');else tb&&(tb.innerHTML='<tr><td colspan="9">Немає угод</td></tr>');}catch(e){console.error(e);}}
+async function resetNewsStrategy(){if(confirm('Скинути баланс до $100?')){await fetch('/api/news/reset',{method:'POST'});loadNewsData();}}
+async function loadListingData(){
+    try{
+        const b=await fetch('/api/listing/balance').then(r=>r.json());
+        document.getElementById('listingBalanceValue').innerHTML=`$${(b.balance||100).toFixed(2)}`;
+        document.getElementById('listingStats').innerHTML=`<div class="stat-card"><div class="stat-value">$${(b.balance||100).toFixed(2)}</div><div class="stat-label">Баланс</div></div><div class="stat-card"><div class="stat-value ${(b.total_pnl||0)>=0?'positive':'negative'}">${(b.total_pnl||0)>=0?'+':''}$${(b.total_pnl||0).toFixed(2)}</div><div class="stat-label">Загальний PnL</div></div><div class="stat-card"><div class="stat-value">${b.total_trades||0}</div><div class="stat-label">Всього угод</div></div><div class="stat-card"><div class="stat-value ${(b.win_rate||0)>=50?'positive':'negative'}">${b.win_rate||0}%</div><div class="stat-label">Win Rate</div></div>`;
 
-    function updateDashboard(data) {
-        document.getElementById('balance').innerHTML = `$${data.balance.toFixed(2)}`;
-        document.getElementById('lockedAmount').innerHTML = `$${data.locked_amount?.toFixed(2) || 0}`;
-        document.getElementById('openTrades').innerHTML = data.open_trades;
-        const totalPnL = document.getElementById('totalPnL');
-        if(totalPnL) totalPnL.innerHTML = data.total_pnl >= 0 ? `<span class="positive">+$${data.total_pnl.toFixed(2)}</span>` : `<span class="negative">-$${Math.abs(data.total_pnl).toFixed(2)}</span>`;
-        const winRate = document.getElementById('winRate');
-        if(winRate) winRate.innerHTML = `${data.win_rate.toFixed(1)}%`;
-        const dailyPnL = document.getElementById('dailyPnL');
-        if(dailyPnL) dailyPnL.innerHTML = data.daily_pnl >= 0 ? `<span class="positive">+$${data.daily_pnl.toFixed(2)}</span>` : `<span class="negative">-$${Math.abs(data.daily_pnl).toFixed(2)}</span>`;
-        document.getElementById('totalTrades').innerHTML = data.total_trades;
-        if (data.next_forecast) updateNextForecastTimer(data.next_forecast);
-        if (data.server_time) document.getElementById('serverTime').innerHTML = `🕐 Час сервера: ${new Date(data.server_time).toLocaleString('uk-UA')}`;
-        loadAdvancedStats();
-    }
-
-    function updateNextForecastTimer(targetTime) {
-        if (nextForecastTimer) clearInterval(nextForecastTimer);
-        function update() {
-            const diff = new Date(targetTime) - new Date();
-            if (diff <= 0) {
-                document.getElementById('nextForecastTimer').innerHTML = '00:00:00';
-                clearInterval(nextForecastTimer);
-                fetch('/api/status').then(r=>r.json()).then(d=>{ if(d.next_forecast) updateNextForecastTimer(d.next_forecast); });
-                return;
-            }
-            const hours = Math.floor(diff / 3600000);
-            const minutes = Math.floor((diff % 3600000) / 60000);
-            const seconds = Math.floor((diff % 60000) / 1000);
-            document.getElementById('nextForecastTimer').innerHTML = `${hours.toString().padStart(2,'0')}:${minutes.toString().padStart(2,'0')}:${seconds.toString().padStart(2,'0')}`;
+        const o=await fetch('/api/listing/current').then(r=>r.json());
+        const ob=document.getElementById('listingOpenTradesBody');
+        if(ob&&o.length){
+            ob.innerHTML=o.map(tr=>`<tr><td>${tr.symbol}</td><td>${tr.pair}</td><td>$${tr.entry_price.toFixed(4)}</td><td>${tr.quantity||0}</td><td>$${tr.position_usdt.toFixed(2)}</td></tr>`).join('');
+        } else if(ob){
+            ob.innerHTML='<tr><td colspan="5">Немає активних позицій</td></tr>';
         }
-        update();
-        nextForecastTimer = setInterval(update, 1000);
-    }
 
-    function showForecastList(type) {
-        currentForecastList = type;
-        document.querySelectorAll('.forecast-tab-btn').forEach(btn => btn.classList.remove('active'));
-        event.target.classList.add('active');
-        document.getElementById('activeForecastsList').classList.toggle('hidden', type !== 'active');
-        document.getElementById('historyForecastsList').classList.toggle('hidden', type !== 'history');
-        if (type === 'history') loadForecastsHistory(true);
-    }
-
-    async function loadDashboard() {
-        try {
-            const res = await fetch('/api/status');
-            const data = await res.json();
-            updateDashboard(data);
-            const lockedRes = await fetch('/api/locked_amount');
-            const lockedData = await lockedRes.json();
-            document.getElementById('lockedAmount').innerHTML = `$${lockedData.locked_amount.toFixed(2)}`;
-            const openRes = await fetch('/api/open_trades');
-            const openTrades = await openRes.json();
-            const openBody = document.getElementById('openTradesBody');
-            if (openBody) {
-                if (openTrades && openTrades.length > 0) {
-                    const currentPrices = {};
-                    for (const trade of openTrades) {
-                        if (!currentPrices[trade.pair]) {
-                            const priceRes = await fetch(`/api/current_price/${trade.pair}`);
-                            const priceData = await priceRes.json();
-                            currentPrices[trade.pair] = priceData.price;
-                        }
-                    }
-                    openBody.innerHTML = openTrades.map(t => {
-                        const currentPrice = currentPrices[t.pair] || t.entry_price;
-                        let currentPnl = 0, currentPnlPercent = 0;
-                        if (t.side === 'BUY') {
-                            currentPnl = (currentPrice - t.entry_price) * t.quantity;
-                            currentPnlPercent = ((currentPrice - t.entry_price) / t.entry_price) * 100;
-                        } else {
-                            currentPnl = (t.entry_price - currentPrice) * t.quantity;
-                            currentPnlPercent = ((t.entry_price - currentPrice) / t.entry_price) * 100;
-                        }
-                        return `<tr onclick="showTradeOnChart(${t.id})">
-                            <td>${t.pair}</td>
-                            <td><span class="badge ${t.side === 'BUY' ? 'badge-long' : 'badge-short'}">${t.side === 'BUY' ? 'LONG' : 'SHORT'}</span></td>
-                            <td>$${t.entry_price.toFixed(0)}</td>
-                            <td>${t.quantity}</td>
-                            <td>$${t.take_profit?.toFixed(0) || '-'}</td>
-                            <td>$${t.stop_loss?.toFixed(0) || '-'}</td>
-                            <td class="${currentPnl >= 0 ? 'positive' : 'negative'}">${currentPnl >= 0 ? '+' : ''}$${currentPnl.toFixed(2)} (${currentPnlPercent.toFixed(1)}%)</td>
-                            <td><button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); closeTrade(${t.id})">🔴 Закрити</button></td>
-                        </td>`;
-                    }).join('');
-                } else {
-                    openBody.innerHTML = '<tr><td colspan="8" style="text-align: center;">Немає відкритих позицій</td></tr>';
-                }
-            }
-            const tradesRes = await fetch('/api/trades?limit=20');
-            const trades = await tradesRes.json();
-            const tradesBody = document.getElementById('tradesBody');
-            if (tradesBody) {
-                if (trades && trades.length > 0) {
-                    tradesBody.innerHTML = trades.map(t => `<tr onclick="showTradeOnChart(${t.id})">
-                        <td style="white-space: nowrap;">${t.opened_at.replace('T', ' ').substring(0, 16)}</td>
-                        <td>${t.pair}</td>
-                        <td><span class="badge ${t.side === 'BUY' ? 'badge-long' : 'badge-short'}">${t.side === 'BUY' ? 'КУПІВЛЯ' : 'ПРОДАЖ'}</span></td>
-                        <td>$${t.entry_price.toFixed(0)}</td>
-                        <td>${t.exit_price ? '$' + t.exit_price.toFixed(0) : '-'}</td>
-                        <td class="${t.pnl >= 0 ? 'positive' : 'negative'}">${t.pnl >= 0 ? '+' : ''}$${t.pnl.toFixed(2)} (${t.pnl_percent.toFixed(1)}%)</td>
-                    </tr>`).join('');
-                } else {
-                    tradesBody.innerHTML = '<tr><td colspan="6" style="text-align: center;">Ще немає угод</td></tr>';
-                }
-            }
-            loadEquityChart();
-        } catch(e) { console.error('Помилка завантаження дашборду:', e); }
-    }
-
-    async function loadForecasts() {
-        try {
-            const res = await fetch('/api/forecasts');
-            const forecasts = await res.json();
-            const body = document.getElementById('forecastsBody');
-            if (body) {
-                if (forecasts && forecasts.length > 0) {
-                    body.innerHTML = forecasts.map(f => {
-                        let currentPnl = 0, currentPnlPercent = 0;
-                        if (f.signal_type === 'LONG') {
-                            currentPnlPercent = ((f.current_price - f.entry_price) / f.entry_price) * 100;
-                            currentPnl = (currentPnlPercent / 100) * (f.position_usdt || 10);
-                        } else {
-                            currentPnlPercent = ((f.entry_price - f.current_price) / f.entry_price) * 100;
-                            currentPnl = (currentPnlPercent / 100) * (f.position_usdt || 10);
-                        }
-                        const hours = Math.floor(f.time_remaining / 3600);
-                        const minutes = Math.floor((f.time_remaining % 3600) / 60);
-                        return `<tr onclick="showForecastOnChart(${f.id})">
-                            <td>${f.pair}</td>
-                            <td><span class="badge ${f.signal_type === 'LONG' ? 'badge-long' : 'badge-short'}">${f.signal_type === 'LONG' ? '📈 LONG' : '📉 SHORT'}</span></td>
-                            <td>$${f.entry_price.toFixed(0)}</td>
-                            <td>$${f.target_price.toFixed(0)}</td>
-                            <td>$${f.current_price.toFixed(0)}</td>
-                            <td class="${currentPnlPercent >= 0 ? 'positive' : 'negative'}">${currentPnlPercent >= 0 ? '+' : ''}$${currentPnl.toFixed(2)} (${currentPnlPercent.toFixed(1)}%)</td>
-                            <td>${f.confidence.toFixed(1)}%</td>
-                            <td class="timer" data-expires="${f.expires_at}">${hours}г ${minutes}хв</td>
-                            <td><button class="btn btn-outline btn-sm" onclick="event.stopPropagation(); deleteForecast(${f.id})">🗑️</button></td>
-                        </tr>`;
-                    }).join('');
-                    startTimers();
-                } else {
-                    body.innerHTML = '<tr><td colspan="9" style="text-align: center;">Немає активних прогнозів</td></tr>';
-                }
-            }
-        } catch(e) { console.error(e); }
-    }
-
-    function startTimers() {
-        document.querySelectorAll('.timer[data-expires]').forEach(el => {
-            if (el.hasAttribute('data-timer-set')) return;
-            el.setAttribute('data-timer-set', 'true');
-            const expires = new Date(el.dataset.expires);
-            const interval = setInterval(() => {
-                const remaining = (expires - new Date()) / 1000;
-                if (remaining <= 0) { clearInterval(interval); el.innerHTML = 'Завершено'; loadForecasts(); }
-                else { const h = Math.floor(remaining / 3600); const m = Math.floor((remaining % 3600) / 60); el.innerHTML = `${h}г ${m}хв`; }
-            }, 1000);
-        });
-    }
-
-    async function loadForecastsHistory(reset = true) {
-        if (reset) { historyOffset = 0; hasMoreHistory = true; document.getElementById('loadMoreHistoryBtn').style.display = 'none'; }
-        try {
-            const res = await fetch(`/api/forecasts/history?limit=30&offset=${historyOffset}`);
-            const data = await res.json();
-            const body = document.getElementById('forecastsHistoryBody');
-            if (!body) return;
-            if (!data.forecasts || data.forecasts.length === 0 && historyOffset === 0) {
-                body.innerHTML = '<tr><td colspan="7" style="text-align: center;">Немає прогнозів</td></tr>';
-                return;
-            }
-            const rows = data.forecasts.map(f => `<tr onclick="showForecastOnChart(${f.id})">
-                <td style="white-space: nowrap;">${f.created_at.substring(0, 16)}</td>
-                <td>${f.pair}</td>
-                <td><span class="badge ${f.signal_type === 'LONG' ? 'badge-long' : 'badge-short'}">${f.signal_type === 'LONG' ? '📈 LONG' : '📉 SHORT'}</span></td>
-                <td>$${f.entry_price.toFixed(0)}</td>
-                <td>$${f.target_price.toFixed(0)}</td>
-                <td class="${f.result_text.includes('+') ? 'positive' : 'negative'}">${f.result_text}</td>
-                <td><button class="btn btn-outline btn-sm" onclick="event.stopPropagation(); showForecastOnChart(${f.id})">📊 Графік</button></td>
-            </tr>`).join('');
-            if (reset) body.innerHTML = rows;
-            else body.innerHTML += rows;
-            hasMoreHistory = data.forecasts && data.forecasts.length === 30;
-            document.getElementById('loadMoreHistoryBtn').style.display = hasMoreHistory ? 'inline-block' : 'none';
-            historyOffset += data.forecasts?.length || 0;
-        } catch(e) { console.error(e); }
-    }
-
-    async function loadMoreHistory() { if (hasMoreHistory) await loadForecastsHistory(false); }
-
-    async function loadAnalysis() {
-        const pair = document.getElementById('analysisPair').value;
-        const res = await fetch(`/api/analysis/${pair}`);
-        const data = await res.json();
-        const container = document.getElementById('analysisResult');
-        if (data.error) { container.innerHTML = `<div style="color:#ff4757;">${data.error}</div>`; return; }
-        container.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:15px;">
-            <div class="metric-card"><div class="metric-value">$${data.current_price?.toFixed(2)}</div><div class="metric-label">Ціна</div></div>
-            <div class="metric-card"><div class="metric-value" style="color:${data.trend === '📈 ВИСХІДНИЙ' ? '#00ff88' : '#ff4757'}">${data.trend}</div><div class="metric-label">Тренд (сила ${data.trend_strength}%)</div></div>
-            <div class="metric-card"><div class="metric-value" style="color:${data.rsi > 70 ? '#ff4757' : (data.rsi < 30 ? '#00ff88' : '#f39c12')}">${data.rsi}</div><div class="metric-label">RSI</div></div>
-            <div class="metric-card"><div class="metric-value" style="color:${data.macd_cross === 'bullish' ? '#00ff88' : (data.macd_cross === 'bearish' ? '#ff4757' : '#888')}">${data.macd_cross === 'bullish' ? '🟢 БИЧЯЧИЙ' : (data.macd_cross === 'bearish' ? '🔴 ВЕДМЕЖИЙ' : 'НЕЙТРАЛЬНО')}</div><div class="metric-label">MACD</div></div>
-        </div>${data.forecast ? `<div style="margin-top:20px;background:linear-gradient(135deg,rgba(102,126,234,0.2),rgba(118,75,162,0.2));border-radius:15px;padding:20px;text-align:center;"><div style="font-size:32px;font-weight:700;color:${data.forecast === 'LONG' ? '#00ff88' : '#ff4757'}">${data.forecast === 'LONG' ? '📈 LONG' : '📉 SHORT'}</div><div>Ціль: $${data.target_price?.toFixed(2)}</div><div>Впевненість: ${data.confidence}%</div></div>` : '<div style="margin-top:20px;text-align:center;color:#888;">⚠️ Немає чіткого сигналу</div>'}`;
-    }
-
-    async function loadChart() {
-        const pair = document.getElementById('chartPair').value;
-        const timeframe = document.getElementById('chartTimeframe').value;
-        try {
-            const res = await fetch(`/api/chart/${pair}?timeframe=${timeframe}&limit=200`);
-            const data = await res.json();
-            Plotly.newPlot('priceChart', data.data, data.layout || {}, { responsive: true });
-        } catch(e) { document.getElementById('priceChart').innerHTML = '<div style="text-align:center;padding:50px;">Помилка завантаження</div>'; }
-    }
-
-    function resetChartView() { Plotly.relayout('priceChart', { 'xaxis.autorange': true, 'yaxis.autorange': true }); }
-
-    async function loadPnlChart() {
-        try { const res = await fetch('/api/chart/pnl'); const data = await res.json(); Plotly.newPlot('pnlChart', data.data, data.layout || {}, { responsive: true }); } catch(e) {}
-    }
-
-    async function loadEquityChart() {
-        try { const res = await fetch('/api/chart/equity'); const data = await res.json(); Plotly.newPlot('equityChart', data.data, data.layout || {}, { responsive: true }); } catch(e) {}
-    }
-
-    let patternsUpdateInterval = null;
-
-    async function loadTAPatterns() {
-        const pair = document.getElementById('taPair').value;
-        const timeframe = document.getElementById('taTimeframe').value;
-        const chartDiv = document.getElementById('taChart');
-        chartDiv.innerHTML = '<div style="text-align:center;padding:50px;">🔄 Завантаження...</div>';
-        try {
-            const res = await fetch(`/api/chart_patterns/${pair}?timeframe=${timeframe}&limit=300`);
-            const data = await res.json();
-            Plotly.newPlot('taChart', data.data, data.layout || {}, { responsive: true });
-            const infoDiv = document.getElementById('taInfo');
-            infoDiv.innerHTML = `<div style="color:#00ff88;">✅ Фігури відображено на графіку</div>
-                                <div style="font-size:12px; color:#888; margin-top:5px;">
-                                📐 Останнє оновлення: ${new Date().toLocaleTimeString()}<br>
-                                🔄 Наступне оновлення через 30 секунд
-                                </div>`;
-        } catch(e) {
-            console.error('Помилка:', e);
-            chartDiv.innerHTML = '<div style="text-align:center;padding:50px;color:#ff4757;">❌ Помилка завантаження</div>';
+        const t=await fetch('/api/listing/trades').then(r=>r.json());
+        const tb=document.getElementById('listingTradesBody');
+        if(tb&&t.length){
+            tb.innerHTML=t.map(tr=>`<tr><td>${new Date(tr.entry_time).toLocaleString()}</td><td>${tr.exit_time?new Date(tr.exit_time).toLocaleString():'-'}</td><td>${tr.symbol}</td><td>$${tr.entry_price.toFixed(4)}</td><td>${tr.exit_price?'$'+tr.exit_price.toFixed(4):'-'}</td><td class="${(tr.pnl||0)>=0?'positive':'negative'}">${(tr.pnl||0)>=0?'+':''}$${(tr.pnl||0).toFixed(2)} (${(tr.pnl_percent||0).toFixed(1)}%)</td><td>${tr.exit_reason||'-'}</td></tr>`).join('');
+        } else if(tb){
+            tb.innerHTML='<tr><td colspan="7">Немає угод</td></tr>';
         }
+    } catch(e){
+        console.error(e);
     }
+}
+async function resetListingStrategy(){if(confirm('Скинути баланс до $100?')){await fetch('/api/listing/reset',{method:'POST'});loadListingData();}}
 
-    function startPatternsAutoUpdate() {
-        if (patternsUpdateInterval) clearInterval(patternsUpdateInterval);
-        patternsUpdateInterval = setInterval(() => {
-            if (document.getElementById('tab-patterns').classList.contains('active')) {
-                loadTAPatterns();
-            }
-        }, 30000);
-    }
+async function runBacktest(){if(backtestRunning){alert('Бектест вже запущено');return;}const s=document.getElementById('backtestSymbol').value;const tf=document.getElementById('backtestTimeframe').value;let sd=document.getElementById('backtestStartDate').value;let ed=document.getElementById('backtestEndDate').value;const ib=parseFloat(document.getElementById('backtestBalance').value);const rp=parseFloat(document.getElementById('backtestRisk').value);if(!sd||!ed){const e=new Date();const st=new Date();st.setDate(e.getDate()-60);const fd=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;sd=fd(st);ed=fd(e);document.getElementById('backtestStartDate').value=sd;document.getElementById('backtestEndDate').value=ed;}if(new Date(sd)>=new Date(ed)){alert('Дата початку має бути раніше');return;}backtestRunning=true;document.getElementById('backtestProgress').style.display='block';document.getElementById('backtestProgressBar').style.width='0%';document.getElementById('backtestProgressText').innerHTML='Завантаження...';document.getElementById('backtestResults').style.display='none';document.getElementById('backtestError').style.display='none';let p=0;const pi=setInterval(()=>{if(p<90){p+=10;document.getElementById('backtestProgressBar').style.width=p+'%';document.getElementById('backtestProgressText').innerHTML='Аналіз...';}},1000);try{const r=await fetch('/api/backtest/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbol:s,timeframe:tf,start_date:sd,end_date:ed,initial_balance:ib,risk_percent:rp})});const res=await r.json();clearInterval(pi);document.getElementById('backtestProgressBar').style.width='100%';document.getElementById('backtestProgressText').innerHTML='Готово!';if(!r.ok||res.error)throw new Error(res.error||'Помилка сервера');backtestResultsData=res;displayBacktestResults(res);}catch(e){console.error(e);const ed=document.getElementById('backtestError');ed.innerHTML=`❌ ${e.message}`;ed.style.display='block';document.getElementById('backtestResults').style.display='none';}finally{clearInterval(pi);backtestRunning=false;setTimeout(()=>{document.getElementById('backtestProgress').style.display='none';},1000);}}
+function displayBacktestResults(d){document.getElementById('backtestResults').style.display='block';const trp=d.total_return_pct||0;const fb=d.final_balance||0;const tt=d.total_trades||0;const wr=d.win_rate||0;const pf=d.profit_factor||0;const md=d.max_drawdown||0;const sr=d.sharpe_ratio||0;const ex=d.expectancy||0;document.getElementById('backtestMetrics').innerHTML=`<div class="metric-card-backtest"><div class="metric-value-backtest ${trp>=0?'positive':'negative'}">${trp>=0?'+':''}${trp}%</div><div class="metric-label-backtest">Дохідність</div></div><div class="metric-card-backtest"><div class="metric-value-backtest">$${fb.toFixed(2)}</div><div class="metric-label-backtest">Кінцевий баланс</div></div><div class="metric-card-backtest"><div class="metric-value-backtest">${tt}</div><div class="metric-label-backtest">Угод</div></div><div class="metric-card-backtest"><div class="metric-value-backtest ${wr>=50?'positive':'negative'}">${wr}%</div><div class="metric-label-backtest">Win Rate</div></div><div class="metric-card-backtest"><div class="metric-value-backtest">${pf}</div><div class="metric-label-backtest">Profit Factor</div></div><div class="metric-card-backtest"><div class="metric-value-backtest negative">-${md}%</div><div class="metric-label-backtest">Max Drawdown</div></div><div class="metric-card-backtest"><div class="metric-value-backtest">${sr}</div><div class="metric-label-backtest">Sharpe Ratio</div></div><div class="metric-card-backtest"><div class="metric-value-backtest">$${ex.toFixed(2)}</div><div class="metric-label-backtest">Expectancy</div></div>`;if(d.equity_values?.length){Plotly.newPlot('backtestEquityChart',[{x:d.equity_timestamps||d.equity_values.map((_,i)=>i),y:d.equity_values,mode:'lines',name:'Balance',line:{color:'#00d4ff',width:2},fill:'tozeroy',fillcolor:'rgba(0,212,255,0.1)'}],{title:'Equity Curve',xaxis:{title:'Час'},yaxis:{title:'Баланс'},template:'plotly_dark',paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(26,26,46,0.5)'},{responsive:true});}else document.getElementById('backtestEquityChart').innerHTML='<div style="text-align:center;padding:50px;">Немає даних</div>';if(d.trades?.length){const pnls=d.trades.map(t=>t.pnl);Plotly.newPlot('backtestDistributionChart',[{x:pnls,type:'histogram',marker:{color:pnls.map(p=>p>=0?'#00ff88':'#ff4757')},nbinsx:Math.min(20,Math.ceil(pnls.length/5))}],{title:'Розподіл PnL',xaxis:{title:'PnL'},yaxis:{title:'Кількість'},template:'plotly_dark',paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(26,26,46,0.5)'},{responsive:true});}else document.getElementById('backtestDistributionChart').innerHTML='<div style="text-align:center;padding:50px;">Немає даних</div>';const tb=document.getElementById('backtestTradesBody');if(d.trades?.length)tb.innerHTML=d.trades.map(t=>`<tr><td>${new Date(t.entry_time).toLocaleString()}</td><td>${new Date(t.exit_time).toLocaleString()}</td><td><span class="badge ${t.side==='LONG'?'badge-long':'badge-short'}">${t.side}</span></td><td>$${t.entry_price.toFixed(2)}</td><td>$${t.exit_price.toFixed(2)}</td><td class="${t.pnl>=0?'positive':'negative'}">${t.pnl>=0?'+':''}$${t.pnl.toFixed(2)}</td><td class="${t.pnl_percent>=0?'positive':'negative'}">${t.pnl_percent>=0?'+':''}${t.pnl_percent.toFixed(2)}%</td></tr>`).join('');else tb.innerHTML='<tr><td colspan="7">Немає угод</td></tr>';}
+function clearBacktestResults(){document.getElementById('backtestResults').style.display='none';document.getElementById('backtestError').style.display='none';backtestResultsData=null;}
+function exportBacktestResults(){if(!backtestResultsData){alert('Немає результатів');return;}const d=JSON.stringify(backtestResultsData,null,2);const b=new Blob([d],{type:'application/json'});const u=URL.createObjectURL(b);const a=document.createElement('a');a.href=u;a.download=`backtest_${backtestResultsData.symbol}_${new Date().toISOString().slice(0,19)}.json`;a.click();URL.revokeObjectURL(u);}
+function setDefaultBacktestDates(){const e=new Date();const s=new Date();s.setDate(e.getDate()-60);const fd=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;const si=document.getElementById('backtestStartDate');const ei=document.getElementById('backtestEndDate');if(si&&!si.value)si.value=fd(s);if(ei&&!ei.value)ei.value=fd(e);}
 
-    function stopPatternsAutoUpdate() {
-        if (patternsUpdateInterval) {
-            clearInterval(patternsUpdateInterval);
-            patternsUpdateInterval = null;
-        }
-    }
+document.querySelectorAll('.nav-btn').forEach(btn=>{btn.addEventListener('click',()=>{document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));btn.classList.add('active');document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.getElementById(`tab-${btn.dataset.tab}`).classList.add('active');if(btn.dataset.tab==='analysis'){loadChart();loadPnlChart();}if(btn.dataset.tab==='dashboard')loadDashboard();if(btn.dataset.tab==='logs')loadLogs(true);if(btn.dataset.tab==='settings')loadSettings();if(btn.dataset.tab==='forecasts'){loadForecasts();if(currentForecastList==='history')loadForecastsHistory(true);}if(btn.dataset.tab==='patterns'){loadTAPatterns();startPatternsAutoUpdate();}if(btn.dataset.tab==='news')loadNewsData();if(btn.dataset.tab==='listings')loadListingData();});});
 
-    async function showTradeOnChart(tradeId) {
-        openTradeModal();
-        document.getElementById('tradeModalChart').innerHTML = '<div style="text-align:center;padding:50px;">🔄 Завантаження...</div>';
-        const timeframe = document.getElementById('tradeChartTimeframe')?.value || '1h';
-        try {
-            const res = await fetch(`/api/trade/chart/${tradeId}?timeframe=${timeframe}`);
-            const data = await res.json();
-            Plotly.newPlot('tradeModalChart', data.data, data.layout || {}, { responsive: true });
-            currentTradeId = tradeId;
-            currentTradeType = 'trade';
-            const tradeRes = await fetch(`/api/trades?limit=1`);
-            const trades = await tradeRes.json();
-            const trade = trades.find(t => t.id === tradeId);
-            if (trade) document.getElementById('tradeModalTitle').innerHTML = `📊 Угода ${trade.pair} | ${trade.side === 'BUY' ? 'LONG' : 'SHORT'} | Вхід: $${trade.entry_price}`;
-        } catch(e) { document.getElementById('tradeModalChart').innerHTML = '<div style="text-align:center;padding:50px;color:#ff4757;">❌ Помилка</div>'; }
-    }
+const st=document.createElement('style');st.textContent='.hidden{display:none}.log-info{color:#00d4ff}.log-warning{color:#ffa502}.log-error{color:#ff4757}';document.head.appendChild(st);
 
-    async function showForecastOnChart(forecastId) {
-        openForecastModal();
-        document.getElementById('forecastModalChart').innerHTML = '<div style="text-align:center;padding:50px;">🔄 Завантаження...</div>';
-        document.getElementById('forecastDescContent').innerHTML = '<div style="text-align:center;color:#888;">Завантаження опису...</div>';
-        try {
-            const info = await fetch(`/api/forecast/info/${forecastId}`).then(r=>r.json());
-            document.getElementById('forecastModalTitle').innerHTML = `📈 Прогноз ${info.pair} | ${info.signal_type} | Вхід: $${info.entry_price} | Ціль: $${info.target_price}`;
-            currentTradeId = forecastId;
-            currentTradeType = 'forecast';
-            if (info.description) {
-                let descHtml = info.description;
-                descHtml = descHtml.split('**').map((part, idx) => idx % 2 === 1 ? '<strong>' + part + '</strong>' : part).join('');
-                descHtml = descHtml.replace(/• /g, '<span style="color:#667eea;">•</span> ');
-                descHtml = descHtml.replace(/\n/g, '<br>');
-                document.getElementById('forecastDescContent').innerHTML = descHtml;
-            } else {
-                document.getElementById('forecastDescContent').innerHTML = '<div style="color:#888;">Опис відсутній</div>';
-            }
-            const timeframe = document.getElementById('tradeChartTimeframe')?.value || '1h';
-            const res = await fetch(`/api/forecast/chart/${forecastId}?timeframe=${timeframe}`);
-            const data = await res.json();
-            Plotly.newPlot('forecastModalChart', data.data, data.layout || {}, { responsive: true });
-        } catch(e) {
-            console.error('Помилка:', e);
-            document.getElementById('forecastModalChart').innerHTML = '<div style="text-align:center;padding:50px;color:#ff4757;">❌ Помилка завантаження</div>';
-            document.getElementById('forecastDescContent').innerHTML = '<div style="text-align:center;color:#ff4757;">❌ Помилка завантаження опису</div>';
-        }
-    }
+function refreshTradeChart(){if(!currentTradeId)return;const tf=document.getElementById('tradeChartTimeframe').value;document.getElementById('tradeModalChart').innerHTML='<div style="text-align:center;padding:50px;">🔄 Оновлення...</div>';try{if(currentTradeType==='trade'){fetch(`/api/trade/chart/${currentTradeId}?timeframe=${tf}`).then(r=>r.json()).then(d=>Plotly.newPlot('tradeModalChart',d.data,d.layout||{},{responsive:true})).catch(e=>console.error(e));}else if(currentTradeType==='forecast'){fetch(`/api/forecast/chart/${currentTradeId}?timeframe=${tf}`).then(r=>r.json()).then(d=>Plotly.newPlot('tradeModalChart',d.data,d.layout||{},{responsive:true})).catch(e=>console.error(e));fetch(`/api/forecast/info/${currentTradeId}`).then(r=>r.json()).then(i=>{if(i.description){let dh=i.description;dh=dh.split('**').map((p,idx)=>idx%2===1?`<strong>${p}</strong>`:p).join('');dh=dh.replace(/• /g,'<span style="color:#667eea;">•</span> ');dh=dh.replace(/\n/g,'<br>');document.getElementById('forecastDescContent').innerHTML=dh;}}).catch(e=>console.error(e));}}catch(e){console.error('Помилка оновлення графіку:',e);document.getElementById('tradeModalChart').innerHTML='<div style="text-align:center;padding:50px;color:#ff4757;">❌ Помилка</div>';}}
+document.getElementById('tradeChartTimeframe')?.addEventListener('change',refreshTradeChart);
 
-    function openTradeModal() { document.getElementById('tradeModal').style.display = 'block'; document.body.style.overflow = 'hidden'; }
-    function closeTradeModal() { document.getElementById('tradeModal').style.display = 'none'; document.body.style.overflow = 'auto'; }
-    function openForecastModal() { document.getElementById('forecastModal').style.display = 'block'; document.body.style.overflow = 'hidden'; }
-    function closeForecastModal() { document.getElementById('forecastModal').style.display = 'none'; document.body.style.overflow = 'auto'; }
-    document.addEventListener('keydown', function(e) { if (e.key === 'Escape') { closeTradeModal(); closeForecastModal(); } });
-
-    async function loadAdvancedStats() {
-        try {
-            const res = await fetch('/api/stats/advanced');
-            const data = await res.json();
-            if (!data.error) {
-                document.getElementById('profitFactor').innerHTML = data.profit_factor;
-                document.getElementById('maxDrawdown').innerHTML = `$${data.max_drawdown}`;
-                document.getElementById('avgPnL').innerHTML = data.avg_win ? `+$${data.avg_win.toFixed(2)}` : '$0';
-                document.getElementById('kelly').innerHTML = `${data.kelly_criterion}%`;
-            }
-        } catch(e) {}
-    }
-
-    async function loadSettings() {
-        try {
-            const s = await (await fetch('/api/settings')).json();
-            document.getElementById('baseTimeframe').value = s.trading?.base_timeframe || '15m';
-            document.getElementById('emaFast').value = s.strategy?.ema_fast || 21;
-            document.getElementById('emaSlow').value = s.strategy?.ema_slow || 200;
-            document.getElementById('rsiPeriod').value = s.strategy?.rsi_period || 14;
-            document.getElementById('rsiMinLong').value = s.strategy?.rsi_min_long || 40;
-            document.getElementById('rsiMaxLong').value = s.strategy?.rsi_max_long || 65;
-            document.getElementById('rsiMinShort').value = s.strategy?.rsi_min_short || 35;
-            document.getElementById('rsiMaxShort').value = s.strategy?.rsi_max_short || 60;
-            document.getElementById('tpPercent').value = s.strategy?.take_profit_percent || 2.0;
-            document.getElementById('slPercent').value = s.strategy?.stop_loss_percent || 1.5;
-            document.getElementById('atrSlMultiplier').value = s.strategy?.atr_sl_multiplier || 1.5;
-            document.getElementById('atrTpMultiplier').value = s.strategy?.atr_tp_multiplier || 2.5;
-            document.getElementById('minAdx').value = s.strategy?.min_adx || 20;
-            document.getElementById('minVolumeRatio').value = s.strategy?.min_volume_ratio || 1.2;
-            document.getElementById('riskPerTrade').value = s.risk?.risk_per_trade || 2.0;
-            document.getElementById('maxOpenTrades').value = s.risk?.max_open_trades || 3;
-            document.getElementById('maxDailyLoss').value = s.risk?.max_daily_loss || 5.0;
-            document.getElementById('macdCrossOnly').checked = s.strategy?.macd_cross_only || false;
-            document.getElementById('useBollinger').checked = s.strategy?.use_bollinger || false;
-            document.getElementById('useKelly').checked = s.risk?.use_kelly || false;
-            const t = await (await fetch('/api/settings/testing')).json();
-            document.getElementById('createTradesFromForecasts').value = t.create_trades_from_forecasts ? 'true' : 'false';
-            document.getElementById('forecastPositionPercent').value = t.forecast_position_percent || 8;
-            document.getElementById('forecastPositionPercentValue').innerHTML = (t.forecast_position_percent || 8) + '%';
-            const d = await (await fetch('/api/settings/forecast_duration')).json();
-            document.getElementById('forecastDurationHours').value = d.forecast_duration_hours || 12;
-            await loadTradingPairs();
-        } catch(e) { console.error(e); }
-    }
-
-    async function saveSettings() {
-        const settings = {
-            trading: { base_timeframe: document.getElementById('baseTimeframe').value },
-            strategy: {
-                ema_fast: parseInt(document.getElementById('emaFast').value),
-                ema_slow: parseInt(document.getElementById('emaSlow').value),
-                rsi_period: parseInt(document.getElementById('rsiPeriod').value),
-                rsi_min_long: parseInt(document.getElementById('rsiMinLong').value),
-                rsi_max_long: parseInt(document.getElementById('rsiMaxLong').value),
-                rsi_min_short: parseInt(document.getElementById('rsiMinShort').value),
-                rsi_max_short: parseInt(document.getElementById('rsiMaxShort').value),
-                take_profit_percent: parseFloat(document.getElementById('tpPercent').value),
-                stop_loss_percent: parseFloat(document.getElementById('slPercent').value),
-                atr_sl_multiplier: parseFloat(document.getElementById('atrSlMultiplier').value),
-                atr_tp_multiplier: parseFloat(document.getElementById('atrTpMultiplier').value),
-                min_adx: parseInt(document.getElementById('minAdx').value),
-                min_volume_ratio: parseFloat(document.getElementById('minVolumeRatio').value),
-                macd_cross_only: document.getElementById('macdCrossOnly').checked,
-                use_bollinger: document.getElementById('useBollinger').checked
-            },
-            risk: {
-                risk_per_trade: parseFloat(document.getElementById('riskPerTrade').value),
-                max_open_trades: parseInt(document.getElementById('maxOpenTrades').value),
-                max_daily_loss: parseFloat(document.getElementById('maxDailyLoss').value),
-                use_kelly: document.getElementById('useKelly').checked
-            }
-        };
-        try {
-            await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settings) });
-            const createTrades = document.getElementById('createTradesFromForecasts').value === 'true';
-            const forecastPercent = parseFloat(document.getElementById('forecastPositionPercent').value);
-            await fetch('/api/settings/testing', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ create_trades_from_forecasts: createTrades, forecast_position_percent: forecastPercent }) });
-            const forecastDuration = parseInt(document.getElementById('forecastDurationHours').value);
-            await fetch('/api/settings/forecast_duration', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ forecast_duration_hours: forecastDuration }) });
-            if (window.selectedPairs && window.selectedPairs.length) {
-                await fetch('/api/trading_pairs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pairs: window.selectedPairs }) });
-            }
-            alert('Налаштування збережено!');
-        } catch(e) { alert('Помилка: ' + e.message); }
-    }
-
-    async function loadTradingPairs() {
-        try {
-            const res = await fetch('/api/trading_pairs');
-            const data = await res.json();
-            const select = document.getElementById('tradingPairsSelect');
-            if (select) {
-                select.innerHTML = data.available_pairs.map(p => `<option value="${p}" ${data.current_pairs.includes(p) ? 'selected' : ''}>${p}</option>`).join('');
-                window.selectedPairs = [...data.current_pairs];
-            }
-            updateAllPairSelectors(data.current_pairs);
-        } catch(e) { console.error('Помилка завантаження пар:', e); }
-    }
-
-    function updateAllPairSelectors(currentPairs) {
-        const selectors = ['analysisPair', 'chartPair', 'taPair'];
-        selectors.forEach(selectorId => {
-            const select = document.getElementById(selectorId);
-            if (select) {
-                const currentValue = select.value;
-                select.innerHTML = currentPairs.map(p => `<option value="${p}" ${p === currentValue ? 'selected' : ''}>${p}</option>`).join('');
-            }
-        });
-    }
-
-    function updatePairsSelection() {
-        const select = document.getElementById('tradingPairsSelect');
-        if (select) window.selectedPairs = Array.from(select.selectedOptions).map(opt => opt.value);
-    }
-    document.getElementById('tradingPairsSelect')?.addEventListener('change', updatePairsSelection);
-    document.getElementById('forecastPositionPercent')?.addEventListener('input', function() { document.getElementById('forecastPositionPercentValue').innerHTML = this.value + '%'; });
-
-    async function loadLogs(reset = true) {
-        if (reset) { currentLogOffset = 0; hasMoreLogs = true; document.getElementById('loadMoreBtn').style.display = 'none'; }
-        const level = document.getElementById('logLevelFilter').value;
-        const res = await fetch(`/api/logs?level=${level}&limit=50&offset=${currentLogOffset}`);
-        const data = await res.json();
-        const body = document.getElementById('logsBody');
-        if (!body) return;
-        if (!data.logs || data.logs.length === 0 && currentLogOffset === 0) { body.innerHTML = '<tr><td colspan="4">Немає логів</td></tr>'; return; }
-        const rows = data.logs.map(l => `<tr><td style="white-space:nowrap;">${new Date(l.timestamp).toLocaleString()}</td><td class="log-${l.level.toLowerCase()}">${l.level}</td><td>${l.module || '-'}</td><td>${l.message}</td></tr>`).join('');
-        if (reset) body.innerHTML = rows; else body.innerHTML += rows;
-        hasMoreLogs = data.logs && data.logs.length === 50;
-        document.getElementById('loadMoreBtn').style.display = hasMoreLogs ? 'inline-block' : 'none';
-        currentLogOffset += data.logs?.length || 0;
-    }
-
-    async function loadMoreLogs() { if (hasMoreLogs) await loadLogs(false); }
-    async function clearLogs() { if (confirm('Очистити логи?')) { await fetch('/api/logs', { method: 'DELETE' }); loadLogs(true); } }
-    async function closeAllTrades() { if (!confirm("Закрити всі відкриті позиції?")) return; const trades = await (await fetch('/api/open_trades')).json(); let closed = 0; for (const t of trades) { const price = await getCurrentPrice(t.pair); const r = await fetch(`/api/trade/close/${t.id}?price=${price}`, { method: 'POST' }); const data = await r.json(); if (data.pnl !== undefined) closed++; } alert(`Закрито ${closed} позицій`); loadDashboard(); }
-    async function closeTrade(tradeId) { if (confirm(`Закрити угоду?`)) { const price = await getCurrentPrice('BTCUSDT'); const r = await fetch(`/api/trade/close/${tradeId}?price=${price}`, { method: 'POST' }); const data = await r.json(); if (data.pnl !== undefined) { alert(`Закрито! PnL: ${data.pnl >= 0 ? '+' : ''}$${data.pnl.toFixed(2)}`); loadDashboard(); } } }
-    async function deleteForecast(id) { await fetch(`/api/forecast/${id}`, { method: 'DELETE' }); loadForecasts(); if (currentForecastList === 'history') loadForecastsHistory(true); }
-    async function clearAllForecasts() { if (confirm('Очистити всі прогнози?')) { await fetch('/api/forecasts/all', { method: 'DELETE' }); loadForecasts(); loadForecastsHistory(true); } }
-    async function enableNotifications() { const perm = await Notification.requestPermission(); notificationsEnabled = perm === 'granted'; if (notificationsEnabled) { document.querySelector('.notification-permission').style.display = 'none'; alert('Сповіщення увімкнено'); } }
-
-    document.querySelectorAll('.nav-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
-            document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
-            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-            document.getElementById(`tab-${btn.dataset.tab}`).classList.add('active');
-            if (btn.dataset.tab === 'analysis') { loadChart(); loadPnlChart(); }
-            if (btn.dataset.tab === 'dashboard') { loadDashboard(); }
-            if (btn.dataset.tab === 'logs') loadLogs(true);
-            if (btn.dataset.tab === 'settings') loadSettings();
-            if (btn.dataset.tab === 'forecasts') { loadForecasts(); if (currentForecastList === 'history') loadForecastsHistory(true); }
-            if (btn.dataset.tab === 'patterns') { loadTAPatterns(); startPatternsAutoUpdate(); }
-        });
-    });
-
-    const style = document.createElement('style');
-    style.textContent = `.hidden { display: none; } .log-info { color: #00d4ff; } .log-warning { color: #ffa502; } .log-error { color: #ff4757; }`;
-    document.head.appendChild(style);
-
-    const modalTimeframeSelect = document.createElement('select');
-    modalTimeframeSelect.id = 'tradeChartTimeframe';
-    modalTimeframeSelect.innerHTML = '<option value="5m">5 хвилин</option><option value="15m">15 хвилин</option><option value="1h" selected>1 година</option><option value="4h">4 години</option><option value="1d">1 день</option>';
-    modalTimeframeSelect.onchange = function() { refreshTradeChart(); };
-    const modalHeader = document.querySelector('#tradeModal > div > div:first-child');
-    if (modalHeader) modalHeader.appendChild(modalTimeframeSelect);
-    else {
-        const modalDiv = document.querySelector('#tradeModal > div > div');
-        if (modalDiv) modalDiv.appendChild(modalTimeframeSelect);
-    }
-
-    window.refreshTradeChart = async function() {
-        if (!currentTradeId) return;
-        const timeframe = document.getElementById('tradeChartTimeframe').value;
-        document.getElementById('tradeModalChart').innerHTML = '<div style="text-align:center;padding:50px;">🔄 Оновлення графіку...</div>';
-        if (currentTradeType === 'trade') {
-            const res = await fetch(`/api/trade/chart/${currentTradeId}?timeframe=${timeframe}`);
-            const data = await res.json();
-            Plotly.newPlot('tradeModalChart', data.data, data.layout || {}, { responsive: true });
-        } else if (currentTradeType === 'forecast') {
-            const res = await fetch(`/api/forecast/chart/${currentTradeId}?timeframe=${timeframe}`);
-            const data = await res.json();
-            Plotly.newPlot('tradeModalChart', data.data, data.layout || {}, { responsive: true });
-            const info = await fetch(`/api/forecast/info/${currentTradeId}`).then(r=>r.json());
-            if (info.description) {
-                let descHtml = info.description;
-                descHtml = descHtml.split('**').map((part, idx) => idx % 2 === 1 ? '<strong>' + part + '</strong>' : part).join('');
-                descHtml = descHtml.replace(/• /g, '<span style="color:#667eea;">•</span> ');
-                descHtml = descHtml.replace(/\n/g, '<br>');
-                document.getElementById('forecastDescContent').innerHTML = descHtml;
-            }
-        }
-    };
-
-    connectWebSocket();
-    loadTradingPairs();
-    loadDashboard();
-    loadPnlChart();
-    loadForecasts();
-    loadAdvancedStats();
-    setInterval(() => { if (document.getElementById('tab-dashboard').classList.contains('active')) loadDashboard(); }, 10000);
-    setInterval(() => { if (document.getElementById('tab-forecasts').classList.contains('active')) loadForecasts(); }, 10000);
-    setInterval(() => { if (document.getElementById('tab-analysis').classList.contains('active')) loadChart(); }, 30000);
-    document.getElementById('tradeChartTimeframe')?.addEventListener('change', function() { refreshTradeChart(); });
-    </script>
+connectWebSocket();loadTradingPairs();loadDashboard();loadPnlChart();loadForecasts();loadAdvancedStats();setDefaultBacktestDates();
+setInterval(()=>{if(document.getElementById('tab-dashboard').classList.contains('active'))loadDashboard();},10000);
+setInterval(()=>{if(document.getElementById('tab-forecasts').classList.contains('active'))loadForecasts();},10000);
+setInterval(()=>{if(document.getElementById('tab-analysis').classList.contains('active'))loadChart();},30000);
+setInterval(()=>{if(document.getElementById('tab-news').classList.contains('active'))loadNewsData();},30000);
+setInterval(()=>{if(document.getElementById('tab-listings').classList.contains('active'))loadListingData();},30000);
+</script>
 </body>
 </html>

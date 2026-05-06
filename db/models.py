@@ -136,15 +136,12 @@ class ForecastDB(Base):
     expires_at = Column(DateTime, nullable=False)
     closed_at = Column(DateTime, nullable=True)
     result = Column(String(50), nullable=True)
-
-    # Додаткові поля для PnL
     position_quantity = Column(Float, default=0.0)
     position_usdt = Column(Float, default=0.0)
     current_pnl = Column(Float, default=0.0)
     closed_pnl = Column(Float, default=0.0)
-
-    description = Column(Text, nullable=True)  # Додати після closed_pnl
-    indicators_snapshot = Column(Text, nullable=True)  # JSON з індикаторами на момент прогнозу
+    description = Column(Text, nullable=True)
+    indicators_snapshot = Column(Text, nullable=True)
 
     __table_args__ = (
         Index('idx_forecasts_pair_status', 'pair', 'status'),
@@ -152,17 +149,96 @@ class ForecastDB(Base):
         Index('idx_forecasts_expires_at', 'expires_at'),
     )
 
-# Додати після класу ForecastDB
+
 class RiskState(Base):
     __tablename__ = "risk_state"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     is_paper = Column(Integer, default=1)
-    daily_loss_reached = Column(Integer, default=0)  # 0=False, 1=True
+    daily_loss_reached = Column(Integer, default=0)
     last_reset_date = Column(DateTime, nullable=False)
     daily_pnl = Column(Float, default=0.0)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
     __table_args__ = (
         Index('idx_risk_state_paper', 'is_paper', unique=True),
+    )
+
+
+# ==================== МОДЕЛІ ДЛЯ НОВИН ====================
+
+class NewsBalance(Base):
+    __tablename__ = "news_balance"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    asset = Column(String(20), default="USDT")
+    amount = Column(Float, default=100.0)
+    initial_balance = Column(Float, default=100.0)
+    total_pnl = Column(Float, default=0.0)
+    total_trades = Column(Integer, default=0)
+    win_trades = Column(Integer, default=0)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class NewsTrade(Base):
+    __tablename__ = "news_trades"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    title = Column(String(500), nullable=True)
+    pair = Column(String(20), nullable=False)
+    side = Column(String(10), nullable=False)
+    sentiment_score = Column(Float, default=0.0)
+    entry_price = Column(Float, nullable=False)
+    exit_price = Column(Float, nullable=True)
+    quantity = Column(Float, nullable=False)
+    position_usdt = Column(Float, nullable=False)
+    pnl = Column(Float, default=0.0)
+    pnl_percent = Column(Float, default=0.0)
+    status = Column(String(20), default="open")
+    exit_reason = Column(String(100), nullable=True)
+    entry_time = Column(DateTime, server_default=func.now())
+    exit_time = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index('idx_news_trades_status', 'status'),
+        Index('idx_news_trades_entry_time', 'entry_time'),
+    )
+
+
+# ==================== МОДЕЛІ ДЛЯ НОВИХ МОНЕТ ====================
+
+class ListingBalance(Base):
+    __tablename__ = "listing_balance"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    asset = Column(String(20), default="USDT")
+    amount = Column(Float, default=100.0)
+    initial_balance = Column(Float, default=100.0)
+    total_pnl = Column(Float, default=0.0)
+    total_trades = Column(Integer, default=0)
+    win_trades = Column(Integer, default=0)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class ListingTrade(Base):
+    __tablename__ = "listing_trades"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    symbol = Column(String(50), nullable=False)
+    pair = Column(String(50), nullable=False)
+    exchange = Column(String(20), default="bybit")
+    entry_price = Column(Float, nullable=False)
+    exit_price = Column(Float, nullable=True)
+    quantity = Column(Float, nullable=False)
+    position_usdt = Column(Float, nullable=False)
+    pnl = Column(Float, default=0.0)
+    pnl_percent = Column(Float, default=0.0)
+    status = Column(String(20), default="open")
+    exit_reason = Column(String(100), nullable=True)
+    entry_time = Column(DateTime, server_default=func.now())
+    exit_time = Column(DateTime, nullable=True)
+
+    __table_args__ = (
+        Index('idx_listing_trades_status', 'status'),
+        Index('idx_listing_trades_entry_time', 'entry_time'),
     )

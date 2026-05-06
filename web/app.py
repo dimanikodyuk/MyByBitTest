@@ -1217,6 +1217,363 @@ async def delete_forecast(forecast_id: str):
         db.close()
 
 
+# ==================== БЕКТЕСТЕР ====================
+
+@app.post("/api/backtest/run")
+async def run_backtest(request: Dict[str, Any]):
+    """Запуск бектесту"""
+    from core.backtest_engine import BacktestEngine
+    from datetime import datetime
+
+    symbol = request.get('symbol', 'BTCUSDT')
+    timeframe = request.get('timeframe', '15m')
+    start_date_str = request.get('start_date')
+    end_date_str = request.get('end_date')
+    initial_balance = float(request.get('initial_balance', 1000.0))
+    risk_percent = float(request.get('risk_percent', 2.0))
+
+    if not start_date_str or not end_date_str:
+        raise HTTPException(status_code=400, detail="Не вказані дати початку та кінця")
+
+    try:
+        start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
+        end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Невірний формат дати. Використовуйте YYYY-MM-DD")
+
+    if start_date >= end_date:
+        raise HTTPException(status_code=400, detail="Дата початку має бути раніше дати кінця")
+
+    engine = BacktestEngine()
+
+    try:
+        result = engine.run_backtest(
+            symbol=symbol,
+            timeframe=timeframe,
+            start_date=start_date,
+            end_date=end_date,
+            initial_balance=initial_balance,
+            risk_percent=risk_percent
+        )
+
+        if 'error' in result:
+            raise HTTPException(status_code=400, detail=result['error'])
+
+        return JSONResponse(content=result)
+
+    except Exception as e:
+        logger.error(f"Помилка бектесту: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/backtest/history")
+async def get_backtest_history(limit: int = 20, offset: int = 0):
+    """Отримання історії бектестів"""
+    db = SessionLocal()
+    try:
+        from db.backtest_models import Backtest
+
+        query = db.query(Backtest).order_by(Backtest.created_at.desc())
+        total = query.count()
+        backtests = query.offset(offset).limit(limit).all()
+
+        return {
+            "backtests": [
+                {
+                    "id": b.id,
+                    "name": b.name,
+                    "symbol": b.symbol,
+                    "timeframe": b.timeframe,
+                    "total_return_pct": b.total_return_pct,
+                    "final_balance": b.final_balance,
+                    "total_trades": b.total_trades,
+                    "win_rate": b.win_rate,
+                    "profit_factor": b.profit_factor,
+                    "max_drawdown": b.max_drawdown,
+                    "created_at": b.created_at.isoformat()
+                }
+                for b in backtests
+            ],
+            "total": total,
+            "limit": limit,
+            "offset": offset
+        }
+    finally:
+        db.close()
+
+
+@app.get("/api/backtest/{backtest_id}")
+async def get_backtest_by_id(backtest_id: int):
+    """Отримання результату бектесту за ID"""
+    db = SessionLocal()
+    try:
+        from db.backtest_models import Backtest
+
+        backtest = db.query(Backtest).filter(Backtest.id == backtest_id).first()
+        if not backtest:
+            raise HTTPException(status_code=404, detail="Бектест не знайдено")
+
+        return {
+            "id": backtest.id,
+            "name": backtest.name,
+            "description": backtest.description,
+            "symbol": backtest.symbol,
+            "timeframe": backtest.timeframe,
+            "start_date": backtest.start_date.isoformat(),
+            "end_date": backtest.end_date.isoformat(),
+            "initial_balance": backtest.initial_balance,
+            "total_return_pct": backtest.total_return_pct,
+            "final_balance": backtest.final_balance,
+            "total_trades": backtest.total_trades,
+            "win_trades": backtest.win_trades,
+            "loss_trades": backtest.loss_trades,
+            "win_rate": backtest.win_rate,
+            "profit_factor": backtest.profit_factor,
+            "max_drawdown": backtest.max_drawdown,
+            "sharpe_ratio": backtest.sharpe_ratio,
+            "expectancy": backtest.expectancy,
+            "trades": backtest.trades,
+            "equity_values": backtest.equity_values,
+            "equity_timestamps": backtest.equity_timestamps,
+            "created_at": backtest.created_at.isoformat()
+        }
+    finally:
+        db.close()
+
+
+@app.post("/api/backtest/save")
+async def save_backtest(request: Dict[str, Any]):
+    """Збереження результату бектесту"""
+    from db.backtest_models import Backtest
+
+    db = SessionLocal()
+    try:
+        backtest = Backtest(
+            name=request.get('name', f"Бектест {datetime.now().strftime('%Y-%m-%d %H:%M')}"),
+            description=request.get('description'),
+            symbol=request['symbol'],
+            timeframe=request['timeframe'],
+            start_date=datetime.fromisoformat(request['start_date']),
+            end_date=datetime.fromisoformat(request['end_date']),
+            initial_balance=request['initial_balance'],
+            risk_percent=request.get('risk_percent', 2.0),
+            total_return_pct=request['total_return_pct'],
+            final_balance=request['final_balance'],
+            total_trades=request['total_trades'],
+            win_trades=request['win_trades'],
+            loss_trades=request['loss_trades'],
+            win_rate=request['win_rate'],
+            total_pnl=request['total_pnl'],
+            gross_profit=request['gross_profit'],
+            gross_loss=request['gross_loss'],
+            profit_factor=request['profit_factor'],
+            max_drawdown=request['max_drawdown'],
+            sharpe_ratio=request['sharpe_ratio'],
+            expectancy=request['expectancy'],
+            trades=request['trades'],
+            equity_values=request['equity_values'],
+            equity_timestamps=request['equity_timestamps']
+        )
+        db.add(backtest)
+        db.commit()
+        db.refresh(backtest)
+
+        return {"status": "success", "id": backtest.id, "message": "Бектест збережено"}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Помилка збереження бектесту: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+
+@app.delete("/api/backtest/{backtest_id}")
+async def delete_backtest(backtest_id: int):
+    """Видалення бектесту"""
+    from db.backtest_models import Backtest
+
+    db = SessionLocal()
+    try:
+        backtest = db.query(Backtest).filter(Backtest.id == backtest_id).first()
+        if not backtest:
+            raise HTTPException(status_code=404, detail="Бектест не знайдено")
+
+        db.delete(backtest)
+        db.commit()
+
+        return {"status": "success", "message": "Бектест видалено"}
+    finally:
+        db.close()
+
+# ==================== НОВИННА ТОРГІВЛЯ ====================
+
+@app.get("/api/news/balance")
+async def get_news_balance():
+    """Отримання балансу новинної стратегії"""
+    db = SessionLocal()
+    try:
+        from db.models import NewsBalance  # <- ВИПРАВЛЕНО
+        balance = db.query(NewsBalance).first()
+        if not balance:
+            balance = NewsBalance(amount=100.0, initial_balance=100.0)
+            db.add(balance)
+            db.commit()
+            db.refresh(balance)
+        return {"balance": balance.amount, "initial": balance.initial_balance, "total_pnl": balance.total_pnl, "total_trades": balance.total_trades, "win_rate": round(balance.win_trades / balance.total_trades * 100, 1) if balance.total_trades > 0 else 0}
+    finally:
+        db.close()
+
+
+@app.post("/api/news/reset")
+async def reset_news_balance():
+    """Скидання балансу новинної стратегії"""
+    db = SessionLocal()
+    try:
+        from db.models import NewsBalance, NewsTrade  # <- ВИПРАВЛЕНО
+        # Закриваємо всі відкриті угоди
+        open_trades = db.query(NewsTrade).filter(NewsTrade.status == "open").all()
+        for trade in open_trades:
+            trade.status = "cancelled"
+            trade.exit_reason = "RESET"
+        # Скидаємо баланс
+        balance = db.query(NewsBalance).first()
+        if balance:
+            balance.amount = 100.0
+            balance.initial_balance = 100.0
+            balance.total_pnl = 0
+            balance.total_trades = 0
+            balance.win_trades = 0
+        else:
+            balance = NewsBalance(amount=100.0, initial_balance=100.0)
+            db.add(balance)
+        db.commit()
+        return {"status": "success", "message": "Баланс скинуто до $100"}
+    finally:
+        db.close()
+
+
+@app.get("/api/news/trades")
+async def get_news_trades(limit: int = 50):
+    """Отримання історії угод за новинами"""
+    db = SessionLocal()
+    try:
+        from db.models import NewsTrade  # <- ВИПРАВЛЕНО
+        trades = db.query(NewsTrade).order_by(NewsTrade.entry_time.desc()).limit(limit).all()
+        return [
+            {
+                "id": t.id,
+                "title": t.title[:100] if t.title else "-",
+                "pair": t.pair,
+                "side": t.side,
+                "entry_price": t.entry_price,
+                "exit_price": t.exit_price,
+                "pnl": t.pnl,
+                "pnl_percent": t.pnl_percent,
+                "entry_time": t.entry_time.isoformat(),
+                "exit_time": t.exit_time.isoformat() if t.exit_time else None,
+                "status": t.status,
+                "exit_reason": t.exit_reason
+            }
+            for t in trades
+        ]
+    finally:
+        db.close()
+
+# ==================== НОВІ МОНЕТИ ====================
+
+@app.get("/api/listing/balance")
+async def get_listing_balance():
+    """Отримання балансу стратегії нових монет"""
+    db = SessionLocal()
+    try:
+        from db.models import ListingBalance  # <- ВИПРАВЛЕНО
+        balance = db.query(ListingBalance).first()
+        if not balance:
+            balance = ListingBalance(amount=100.0, initial_balance=100.0)
+            db.add(balance)
+            db.commit()
+            db.refresh(balance)
+        return {"balance": balance.amount, "initial": balance.initial_balance, "total_pnl": balance.total_pnl, "total_trades": balance.total_trades, "win_rate": round(balance.win_trades / balance.total_trades * 100, 1) if balance.total_trades > 0 else 0}
+    finally:
+        db.close()
+
+
+
+@app.post("/api/listing/reset")
+async def reset_listing_balance():
+    """Скидання балансу стратегії нових монет"""
+    db = SessionLocal()
+    try:
+        from db.models import ListingBalance, ListingTrade  # <- ВИПРАВЛЕНО
+        open_trades = db.query(ListingTrade).filter(ListingTrade.status == "open").all()
+        for trade in open_trades:
+            trade.status = "cancelled"
+            trade.exit_reason = "RESET"
+        balance = db.query(ListingBalance).first()
+        if balance:
+            balance.amount = 100.0
+            balance.initial_balance = 100.0
+            balance.total_pnl = 0
+            balance.total_trades = 0
+            balance.win_trades = 0
+        else:
+            balance = ListingBalance(amount=100.0, initial_balance=100.0)
+            db.add(balance)
+        db.commit()
+        return {"status": "success", "message": "Баланс скинуто до $100"}
+    finally:
+        db.close()
+
+
+@app.get("/api/listing/trades")
+async def get_listing_trades(limit: int = 50):
+    """Отримання історії угод за новими монетами"""
+    db = SessionLocal()
+    try:
+        from db.models import ListingTrade  # <- ВИПРАВЛЕНО
+        trades = db.query(ListingTrade).order_by(ListingTrade.entry_time.desc()).limit(limit).all()
+        return [
+            {
+                "id": t.id,
+                "symbol": t.symbol,
+                "pair": t.pair,
+                "entry_price": t.entry_price,
+                "exit_price": t.exit_price,
+                "pnl": t.pnl,
+                "pnl_percent": t.pnl_percent,
+                "entry_time": t.entry_time.isoformat(),
+                "exit_time": t.exit_time.isoformat() if t.exit_time else None,
+                "status": t.status,
+                "exit_reason": t.exit_reason
+            }
+            for t in trades
+        ]
+    finally:
+        db.close()
+
+
+@app.get("/api/listing/current")
+async def get_current_listings():
+    """Отримання поточних активних монет (відкриті позиції)"""
+    db = SessionLocal()
+    try:
+        from db.models import ListingTrade  # <- ВИПРАВЛЕНО
+        open_trades = db.query(ListingTrade).filter(ListingTrade.status == "open").all()
+        return [
+            {
+                "id": t.id,
+                "symbol": t.symbol,
+                "pair": t.pair,
+                "entry_price": t.entry_price,
+                "entry_time": t.entry_time.isoformat(),
+                "position_usdt": t.position_usdt,
+                "quantity": t.quantity
+            }
+            for t in open_trades
+        ]
+    finally:
+        db.close()
+
 @app.delete("/api/forecasts/all")
 async def delete_all_forecasts():
     db = SessionLocal()

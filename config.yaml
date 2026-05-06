@@ -94,6 +94,46 @@ trading:
     start: 09:00
     timezone: Europe/Kiev
 
+news_trading:
+  enabled: true
+  initial_balance: 100.0
+  position_percent: 25.0
+  hold_minutes: 60  # тримати позицію 60 хвилин
+  max_trades_per_day: 10
+  # Ключові слова для позитивних новин
+  bullish_keywords:
+    - "partnership"
+    - "integration"
+    - "listing"
+    - "launch"
+    - "upgrade"
+    - "announcement"
+    - "collaboration"
+    - "acquisition"
+    - "mainnet"
+    - "futures"
+  # Ключові слова для негативних новин
+  bearish_keywords:
+    - "hack"
+    - "exploit"
+    - "delay"
+    - "lawsuit"
+    - "regulator"
+    - "ban"
+    - "suspend"
+    - "investigation"
+    - "vulnerability"
+
+listing_trading:
+  enabled: true
+  initial_balance: 100.0
+  position_percent: 25.0
+  hold_minutes: 30  # тримати позицію 30 хвилин
+  max_trades_per_day: 5
+  # Параметри виходу
+  take_profit_percent: 50.0  # Прибуток 50% - продати
+  stop_loss_percent: 20.0    # Збиток 20% - продати
+
 web:
   enable_charts: true
   enable_manual_close: true
