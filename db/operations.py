@@ -262,6 +262,21 @@ class DatabaseOperations:
 
         return self._safe_execute(_get)
 
+    def get_forecasts_count_today(self) -> int:
+        """Кількість прогнозів створених сьогодні"""
+        try:
+            from db.models import ForecastDB
+            from datetime import date
+            today = date.today()
+            count = self.db.query(ForecastDB).filter(
+                func.date(ForecastDB.created_at) == today
+            ).count()
+            return count
+        except Exception as e:
+            logger.error(f"Помилка підрахунку прогнозів: {e}")
+            return 0
+
+
     def get_stats(self, is_paper: bool = True) -> dict:
         def _get():
             paper_val = 1 if is_paper else 0

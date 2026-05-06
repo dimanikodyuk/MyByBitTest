@@ -1,99 +1,99 @@
 database:
   log_retention_days: 7
   path: data/trading.db
+
 exchange:
   name: bybit
   testnet: false
   ws_ping_interval: 20
   ws_ping_timeout: 10
+
 logging:
   compression: zip
   file: logs/trading.log
   level: INFO
   rotation: 7 days
+
 paper_trading:
   commission_percent: 0.1
   initial_balance: 100.0
   slippage_percent: 0.1
   spread_percent: 0.05
+
 real_trading:
   enabled: false
   max_position_usdt: 500
   use_testnet: false
+
 risk:
   kelly_window: 50
   max_daily_loss: 5
-  max_open_trades: 5
+  max_open_trades: 3
   min_balance_usdt: 10.0
   risk_per_trade: 2
   use_kelly: true
+
 strategy:
   ema_fast: 21
   ema_slow: 200
-  rsi_min: 35
-  rsi_max: 70
   rsi_period: 14
-  # Окремі зони RSI для LONG та SHORT
-  rsi_min_long: 35
-  rsi_max_long: 70
-  rsi_min_short: 30
-  rsi_max_short: 65
-  # ATR-based TP/SL (замість фіксованих відсотків)
-  # SL = 1.5 * ATR, TP = 2.5 * ATR → RR ~1.67
+  rsi_min_long: 40
+  rsi_max_long: 65
+  rsi_min_short: 35
+  rsi_max_short: 60
+
+  # ATR множники
   atr_sl_multiplier: 1.5
   atr_tp_multiplier: 2.5
-  # Фіксовані відсотки як fallback якщо ATR недоступний
+
+  # Фільтри
+  min_volume_ratio: 1.2
+  min_reward_risk_ratio: 2.0
+  min_adx: 20
+  macd_cross_only: true
+  min_confidence: 65
+  max_forecasts_per_day: 10
+
+  # Фіксовані відсотки як fallback
   take_profit_percent: 2.0
   stop_loss_percent: 1.5
-  min_reward_risk_ratio: 1.5
-  macd_fast: 12
-  macd_signal: 9
-  macd_slow: 26
-  # Знижено поріг об'єму: 0.5 = половина від середнього
-  # (1.2 було занадто жорстко і блокувало більшість угод)
-  min_volume_ratio: 0.5
+
+  # Trailing stop
   trailing_activation_percent: 1.0
   trailing_distance_percent: 0.5
   trailing_stop: true
+
+  # Додаткові індикатори
   use_bollinger: true
   use_fibonacci: true
   use_ichimoku: false
+
 telegram:
   commands_enabled: true
   enabled: true
   notifications_enabled: true
+
 testing:
   create_trades_from_forecasts: true
-  # Зменшено з 25% до 15% — менший ризик на прогноз
-  forecast_position_percent: 15
+  forecast_position_percent: 8
+
 trading:
-  # 15m — оптимальний таймфрейм для внутрішньоденної торгівлі
   base_timeframe: 15m
-  confirmation_timeframes:
-  - 15m
-  - 1h
-  news_filter:
-    enabled: false
-    keywords:
-    - FOMC
-    - CPI
-    - Nonfarm
-    - Interest Rate
-    - Fed
+  confirmation_timeframes: [15m, 1h]
+  cooldown_candles: 5
   pairs:
-  - BTCUSDT
-  - ETHUSDT
-  - SOLUSDT
-  - DOGEUSDT
-  - ETCUSDT
+    - BTCUSDT
+    - ETHUSDT
+    - SOLUSDT
+    - DOGEUSDT
+    - ETCUSDT
   signal_check_interval: 30
-  # Cooldown: 3 свічки після збиткової угоди
-  cooldown_candles: 3
   trading_hours:
     enabled: false
     end: '21:00'
     start: 09:00
     timezone: Europe/Kiev
+
 web:
   enable_charts: true
   enable_manual_close: true

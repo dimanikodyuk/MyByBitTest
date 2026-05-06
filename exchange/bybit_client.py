@@ -7,6 +7,50 @@ import json
 import threading
 from typing import Dict, List, Callable, Optional
 from collections import defaultdict
+from functools import wraps
+from collections import deque
+
+
+class RateLimiter:
+    """Простий rate limiter для API запитів"""
+
+    def __init__(self, max_calls: int, period: float = 1.0):
+        self.max_calls = max_calls
+        self.period = period
+        self.calls = deque()
+
+    def wait_if_needed(self):
+        now = time.time()
+        # Видаляємо старі запити
+        while self.calls and self.calls[0] < now - self.period:
+            self.calls.popleft()
+
+        if len(self.calls) >= self.max_calls:
+            sleep_time = self.period - (now - self.calls[0])
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+
+        self.calls.append(time.time())
+
+
+# Глобальні лімітери (різні для різних типів запитів)
+_public_limiter = RateLimiter(max_calls=45, period=1.0)  # 45 запитів/сек
+_private_limiter = RateLimiter(max_calls=45, period=1.0)  # 45 запитів/сек
+_kline_limiter = RateLimiter(max_calls=20, period=1.0)  # 20 запитів/сек для історії
+
+
+def rate_limit(limiter):
+    """Декоратор для rate limiting"""
+
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            limiter.wait_if_needed()
+            return func(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
 
 
 class BybitClient:
@@ -64,6 +108,8 @@ class BybitClient:
         logger.info(f"BybitClient initialized (testnet={self.testnet})")
 
     # === REST METHODS ===
+
+    @rate_limit(_kline_limiter)
     def get_klines(self, symbol: str, interval: str, limit: int = 200):
         """Отримання історичних свічок"""
         try:
@@ -97,6 +143,7 @@ class BybitClient:
             logger.error(f"Exception in get_klines: {e}")
             return None
 
+    @rate_limit(_public_limiter)
     def get_current_price(self, symbol: str) -> Optional[float]:
         """Отримання поточної ціни"""
         try:
@@ -108,6 +155,7 @@ class BybitClient:
             logger.error(f"Error getting price for {symbol}: {e}")
             return None
 
+    @rate_limit(_private_limiter)
     def get_balance(self, coin: str = "USDT") -> float:
         """Отримання реального балансу"""
         if not self.api_key:
@@ -124,6 +172,7 @@ class BybitClient:
             logger.error(f"Error getting balance: {e}")
             return 0.0
 
+    @rate_limit(_private_limiter)
     def place_order(self, symbol: str, side: str, order_type: str,
                     qty: float, price: float = None, time_in_force: str = "GTC"):
         """Розміщення реального ордера"""
@@ -151,6 +200,36 @@ class BybitClient:
         except Exception as e:
             logger.error(f"Exception placing order: {e}")
             return None
+
+    @rate_limit(_private_limiter)
+    def get_order_status(self, symbol: str, order_id: str) -> Optional[Dict]:
+        """Отримання статусу ордера"""
+        try:
+            response = self.session.get_open_orders(
+                category="spot",
+                symbol=symbol,
+                orderId=order_id
+            )
+            if response['retCode'] == 0:
+                orders = response['result']['list']
+                if orders:
+                    return orders[0]
+            return None
+        except Exception as e:
+            logger.error(f"Error getting order status: {e}")
+            return None
+
+    def wait_for_order_fill(self, symbol: str, order_id: str, timeout: int = 10) -> bool:
+        """Очікування виконання ордера"""
+        start = time.time()
+        while time.time() - start < timeout:
+            status = self.get_order_status(symbol, order_id)
+            if status and status.get('orderStatus') == 'Filled':
+                return True
+            if status and status.get('orderStatus') in ['Cancelled', 'Rejected']:
+                return False
+            time.sleep(0.5)
+        return False
 
     # === WEBSOCKET METHODS ===
     def subscribe_candles(self, symbol: str, interval: str, callback: Callable):

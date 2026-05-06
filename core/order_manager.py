@@ -3,17 +3,17 @@ import threading
 import pandas as pd
 import numpy as np
 from typing import Dict, Optional, List, Any
-from datetime import datetime
+from datetime import datetime, date
 from db.operations import DatabaseOperations
 from db.database import SessionLocal
-from db.models import SignalType, OrderSide, Trade
+from db.models import SignalType, OrderSide, Trade, ForecastDB
 from core.strategy import TradingStrategy
 from core.paper_engine import PaperEngine
 from core.risk_manager import RiskManager
 from exchange.bybit_client import BybitClient
 from utils.config_loader import config
 from utils.logger import logger
-
+from sqlalchemy import func
 
 class OrderManager:
     """Головний менеджер ордерів — приймає сигнали та виконує угоди"""
@@ -27,7 +27,7 @@ class OrderManager:
         self.start_time = datetime.now()
 
         self.last_trade_close_time = {}
-        self.cooldown_candles = config.get('trading.cooldown_candles', 3)
+        self.cooldown_candles = config.get('trading.cooldown_candles', 5)  # збільшено з 3 до 5
 
         self.paper_engine = PaperEngine(db_ops)
         self.risk_manager = RiskManager(db_ops, is_paper=True)
@@ -103,8 +103,55 @@ class OrderManager:
             import traceback
             logger.error(traceback.format_exc())
 
+    def _get_forecasts_count_today(self) -> int:
+        """Кількість прогнозів створених сьогодні"""
+        try:
+            db = SessionLocal()
+            today = date.today()
+            count = db.query(ForecastDB).filter(
+                func.date(ForecastDB.created_at) == today
+            ).count()
+            db.close()
+            return count
+        except Exception as e:
+            logger.error(f"Помилка підрахунку прогнозів: {e}")
+            return 0
+
+    def _validate_tp_sl(self, signal_type: str, current_price: float, tp_price: float, sl_price: float) -> tuple:
+        """Валідація та корекція TP/SL"""
+        min_distance_pct = 0.3  # мінімальна відстань 0.3%
+        min_distance = current_price * min_distance_pct / 100
+
+        if signal_type == "LONG":
+            if tp_price <= current_price:
+                tp_price = current_price * 1.01
+                logger.warning(f"TP скориговано до {tp_price:.4f}")
+            if sl_price >= current_price:
+                sl_price = current_price * 0.99
+                logger.warning(f"SL скориговано до {sl_price:.4f}")
+
+            if tp_price - current_price < min_distance:
+                tp_price = current_price + min_distance
+            if current_price - sl_price < min_distance:
+                sl_price = current_price - min_distance
+
+        else:  # SHORT
+            if tp_price >= current_price:
+                tp_price = current_price * 0.99
+                logger.warning(f"TP скориговано до {tp_price:.4f}")
+            if sl_price <= current_price:
+                sl_price = current_price * 1.01
+                logger.warning(f"SL скориговано до {sl_price:.4f}")
+
+            if current_price - tp_price < min_distance:
+                tp_price = current_price - min_distance
+            if sl_price - current_price < min_distance:
+                sl_price = current_price + min_distance
+
+        return tp_price, sl_price
+
     def analyze_market(self, pair: str) -> Dict[str, Any]:
-        """Аналіз ринку для пари"""
+        """Аналіз ринку для пари з покращеним confidence"""
         with self.cache_locks.get(pair, threading.Lock()):
             df = self.cache[pair].get(self.base_timeframe)
 
@@ -122,6 +169,8 @@ class OrderManager:
         rsi = last.get('RSI', 50)
         macd = last.get('MACD', 0)
         macd_signal_val = last.get('MACD_Signal', 0)
+        volume_ratio = last.get('Volume_Ratio', 1.0)
+        adx_val = last.get('ADX', 0)
 
         trend = "📈 ВИСХІДНИЙ" if ema_fast > ema_slow else "📉 НИЗХІДНИЙ"
         trend_strength = abs((ema_fast - ema_slow) / ema_slow * 100) if ema_slow != 0 else 0
@@ -147,20 +196,53 @@ class OrderManager:
         confidence = 0
         target_price = None
 
+        # Перевірка ліміту прогнозів на день
+        max_forecasts = config.get('strategy.max_forecasts_per_day', 10)
+        forecasts_today = self._get_forecasts_count_today()
+        if forecasts_today >= max_forecasts:
+            logger.debug(f"Ліміт прогнозів на день ({max_forecasts}) досягнуто")
+            return {"error": "Ліміт прогнозів на день"}
+
         # Використовуємо ATR для розрахунку target
         atr = float(last.get('ATR', last['close'] * 0.01))
         tp_multiplier = config.get('strategy.atr_tp_multiplier', 2.5)
 
-        if ema_fast > ema_slow and 35 <= rsi <= 70 and (macd > macd_signal_val):
+        if ema_fast > ema_slow and 40 <= rsi <= 65 and macd_cross == "bullish":
             forecast = "LONG"
-            confidence = 70 + min((70 - rsi) / 70 * 20, 20) if rsi < 50 else 70
+
+            # Розрахунок confidence
+            confidence = 70
+            # RSI score (чим ближче до 40, тим краще)
+            rsi_score = min(20, max(0, (rsi - 40) / 25 * 20))
+            confidence += rsi_score
+            # Volume score
+            if volume_ratio > 1.2:
+                volume_score = min(15, (volume_ratio - 1.2) / 2 * 15)
+                confidence += volume_score
+            # ADX score
+            if adx_val > 20:
+                adx_score = min(10, (adx_val - 20) / 30 * 10)
+                confidence += adx_score
+
+            confidence = min(95, max(60, confidence))
             target_price = last['close'] + atr * tp_multiplier
             logger.info(f"📊 [{pair}] Прогноз {forecast} (впевн.{confidence:.0f}%)")
             self._create_auto_forecast(pair, "LONG", last['close'], target_price, confidence)
 
-        elif ema_fast < ema_slow and 30 <= rsi <= 65 and (macd < macd_signal_val):
+        elif ema_fast < ema_slow and 35 <= rsi <= 60 and macd_cross == "bearish":
             forecast = "SHORT"
-            confidence = 70 + min((rsi - 30) / 70 * 20, 20) if rsi > 50 else 70
+
+            confidence = 70
+            rsi_score = min(20, max(0, (60 - rsi) / 25 * 20))
+            confidence += rsi_score
+            if volume_ratio > 1.2:
+                volume_score = min(15, (volume_ratio - 1.2) / 2 * 15)
+                confidence += volume_score
+            if adx_val > 20:
+                adx_score = min(10, (adx_val - 20) / 30 * 10)
+                confidence += adx_score
+
+            confidence = min(95, max(60, confidence))
             target_price = last['close'] - atr * tp_multiplier
             logger.info(f"📊 [{pair}] Прогноз {forecast} (впевн.{confidence:.0f}%)")
             self._create_auto_forecast(pair, "SHORT", last['close'], target_price, confidence)
@@ -189,7 +271,7 @@ class OrderManager:
         logger.info("🛑 OrderManager зупинено")
 
     def _check_signals_sync(self, pair: str):
-        """Перевірка сигналів для входу (синхронна)"""
+        """Перевірка сигналів для входу з покращеними фільтрами"""
 
         if not self.can_trade_now():
             logger.debug(f"⏰ [{pair}] Поза робочими годинами")
@@ -204,6 +286,13 @@ class OrderManager:
         can_open, reason = self.risk_manager.can_open_trade(pair)
         if not can_open:
             logger.info(f"❌ [{pair}] Угода не створена: {reason}")
+            return
+
+        # Перевірка ліміту прогнозів на день
+        max_forecasts = config.get('strategy.max_forecasts_per_day', 10)
+        forecasts_today = self._get_forecasts_count_today()
+        if forecasts_today >= max_forecasts:
+            logger.debug(f"Ліміт прогнозів на день ({max_forecasts}) досягнуто")
             return
 
         # Беремо дані базового таймфрейму
@@ -224,36 +313,51 @@ class OrderManager:
         macd_signal_val = last.get('MACD_Signal', np.nan)
         prev_macd = prev.get('MACD', np.nan)
         prev_signal = prev.get('MACD_Signal', np.nan)
+        adx_val = last.get('ADX', 0)
+        volume_ratio = last.get('Volume_Ratio', 1.0)
 
         # Якщо індикатори ще не розраховані — пропускаємо
         if any(pd.isna(x) for x in [ema_fast_val, ema_slow_val, rsi_val, macd_val]):
             logger.debug(f"⚠️ [{pair}] Індикатори ще не готові (NaN)")
             return
 
-        # Volume
-        volume_ratio = last.get('Volume_Ratio', 1.0)
+        # ========== НОВІ ФІЛЬТРИ ==========
+
+        # 1. ADX фільтр (сила тренду)
+        min_adx = config.get('strategy.min_adx', 20)
+        if adx_val < min_adx:
+            logger.debug(f"[{pair}] ADX={adx_val:.1f} < {min_adx}, сигнал пропущено")
+            return
+
+        # 2. Volume фільтр (збільшено поріг)
         if pd.isna(volume_ratio):
             volume_ratio = 1.0
-        min_volume = config.get('strategy.min_volume_ratio', 0.5)
+        min_volume = config.get('strategy.min_volume_ratio', 1.2)
         volume_ok = volume_ratio >= min_volume
+        if not volume_ok:
+            logger.debug(f"[{pair}] Volume ratio {volume_ratio:.2f} < {min_volume}, сигнал пропущено")
+            return
 
-        # MACD: крос АБО просто по стороні сигнальної лінії
-        macd_bullish = (macd_val > macd_signal_val) and (not pd.isna(prev_macd)) and (
-            macd_val > 0 or (prev_macd <= prev_signal)
-        )
-        macd_bearish = (macd_val < macd_signal_val) and (not pd.isna(prev_macd)) and (
-            macd_val < 0 or (prev_macd >= prev_signal)
-        )
+        # 3. MACD тільки крос
+        macd_cross_only = config.get('strategy.macd_cross_only', True)
+        if macd_cross_only:
+            macd_bullish = macd_val > macd_signal_val and prev_macd <= prev_signal
+            macd_bearish = macd_val < macd_signal_val and prev_macd >= prev_signal
+        else:
+            macd_bullish = macd_val > macd_signal_val
+            macd_bearish = macd_val < macd_signal_val
 
         # LONG сигнал
+        rsi_min_long = config.get('strategy.rsi_min_long', 40)
+        rsi_max_long = config.get('strategy.rsi_max_long', 65)
         ema_ok_long = ema_fast_val > ema_slow_val
-        rsi_ok_long = config.get('strategy.rsi_min_long', 35) <= rsi_val <= config.get('strategy.rsi_max_long', 70)
+        rsi_ok_long = rsi_min_long <= rsi_val <= rsi_max_long
 
-        is_long = ema_ok_long and rsi_ok_long and macd_bullish and volume_ok
+        is_long = ema_ok_long and rsi_ok_long and macd_bullish
 
         if is_long:
             logger.info(
-                f"🔍 [{pair}] Умови LONG: EMA✅ RSI={rsi_val:.1f}✅ MACD✅ VOL={volume_ratio:.2f}✅")
+                f"🔍 [{pair}] Умови LONG: EMA✅ RSI={rsi_val:.1f}✅ MACD✅ VOL={volume_ratio:.2f}✅ ADX={adx_val:.1f}✅")
 
             with self.cache_locks.get(pair, threading.Lock()):
                 df_15m = self.cache[pair].get('15m')
@@ -263,6 +367,8 @@ class OrderManager:
 
             if confirmed:
                 tp_price, sl_price = self.strategies[pair].calculate_atr_tp_sl(df_base, "LONG")
+                # Валідація TP/SL
+                tp_price, sl_price = self._validate_tp_sl("LONG", last['close'], tp_price, sl_price)
                 logger.info(f"🎯 [{pair}] LONG СИГНАЛ! Ціна={last['close']:.4f} TP={tp_price:.4f} SL={sl_price:.4f}")
                 self._create_auto_forecast(pair, "LONG", last['close'], tp_price, 85)
                 self._execute_trade_sync(pair, "LONG", last['close'], tp_price, sl_price)
@@ -271,14 +377,16 @@ class OrderManager:
             return
 
         # SHORT сигнал
+        rsi_min_short = config.get('strategy.rsi_min_short', 35)
+        rsi_max_short = config.get('strategy.rsi_max_short', 60)
         ema_ok_short = ema_fast_val < ema_slow_val
-        rsi_ok_short = config.get('strategy.rsi_min_short', 30) <= rsi_val <= config.get('strategy.rsi_max_short', 65)
+        rsi_ok_short = rsi_min_short <= rsi_val <= rsi_max_short
 
-        is_short = ema_ok_short and rsi_ok_short and macd_bearish and volume_ok
+        is_short = ema_ok_short and rsi_ok_short and macd_bearish
 
         if is_short:
             logger.info(
-                f"🔍 [{pair}] Умови SHORT: EMA✅ RSI={rsi_val:.1f}✅ MACD✅ VOL={volume_ratio:.2f}✅")
+                f"🔍 [{pair}] Умови SHORT: EMA✅ RSI={rsi_val:.1f}✅ MACD✅ VOL={volume_ratio:.2f}✅ ADX={adx_val:.1f}✅")
 
             with self.cache_locks.get(pair, threading.Lock()):
                 df_15m = self.cache[pair].get('15m')
@@ -288,6 +396,7 @@ class OrderManager:
 
             if confirmed:
                 tp_price, sl_price = self.strategies[pair].calculate_atr_tp_sl(df_base, "SHORT")
+                tp_price, sl_price = self._validate_tp_sl("SHORT", last['close'], tp_price, sl_price)
                 logger.info(f"🎯 [{pair}] SHORT СИГНАЛ! Ціна={last['close']:.4f} TP={tp_price:.4f} SL={sl_price:.4f}")
                 self._create_auto_forecast(pair, "SHORT", last['close'], tp_price, 85)
                 self._execute_trade_sync(pair, "SHORT", last['close'], tp_price, sl_price)
@@ -295,11 +404,9 @@ class OrderManager:
                 logger.info(f"⚠️ [{pair}] SHORT сигнал без підтвердження 15m/1h")
 
     def _execute_trade_sync(self, pair: str, signal_type: str, current_price: float,
-                             tp_price: float = None, sl_price: float = None):
-        """
-        Виконання угоди з ATR-based TP/SL.
-        TP/SL вже розраховані в _check_signals_sync через calculate_atr_tp_sl.
-        """
+                            tp_price: float = None, sl_price: float = None):
+        """Виконання угоди з валідацією TP/SL"""
+
         balance = self.db.get_balance("USDT", is_paper=True)
 
         # Якщо TP/SL не передані — рахуємо з ATR
@@ -318,6 +425,9 @@ class OrderManager:
                     tp_price = current_price * (1 - tp_pct / 100)
                     sl_price = current_price * (1 + sl_pct / 100)
 
+        # Валідація TP/SL
+        tp_price, sl_price = self._validate_tp_sl(signal_type, current_price, tp_price, sl_price)
+
         # Перевірка RR ratio
         if signal_type == "LONG":
             reward = tp_price - current_price
@@ -331,7 +441,7 @@ class OrderManager:
             return
 
         rr_ratio = reward / risk
-        min_rr = config.get('strategy.min_reward_risk_ratio', 1.5)
+        min_rr = config.get('strategy.min_reward_risk_ratio', 2.0)  # збільшено з 1.5 до 2.0
 
         if rr_ratio < min_rr:
             logger.warning(f"⚠️ [{pair}] RR={rr_ratio:.2f} < мін {min_rr}, пропускаємо")
@@ -408,12 +518,12 @@ class OrderManager:
             self.last_trade_close_time.pop(pair, None)
 
     def _create_auto_forecast(self, pair: str, signal_type: str, entry_price: float,
-                               target_price: float, confidence: float):
+                              target_price: float, confidence: float):
         """Створення прогнозу через web.app"""
         import threading as _threading
 
         balance = self.db.get_balance("USDT", is_paper=True)
-        forecast_percent = config.get('testing.forecast_position_percent', 25.0)
+        forecast_percent = config.get('testing.forecast_position_percent', 8)  # зменшено з 25 до 8
         position_usdt = max(balance * (forecast_percent / 100), 10.0)
         if position_usdt > balance:
             position_usdt = balance * 0.9
@@ -457,7 +567,7 @@ class OrderManager:
         t.start()
 
     def _execute_trade_sync_with_size(self, pair: str, signal_type: str,
-                                       current_price: float, quantity: float):
+                                      current_price: float, quantity: float):
         """Виконання угоди з явно вказаним розміром (для ручного виклику)"""
         with self.cache_locks.get(pair, threading.Lock()):
             df_base = self.cache[pair].get(self.base_timeframe)
@@ -465,6 +575,7 @@ class OrderManager:
         tp_price, sl_price = (None, None)
         if df_base is not None:
             tp_price, sl_price = self.strategies[pair].calculate_atr_tp_sl(df_base, signal_type)
+            tp_price, sl_price = self._validate_tp_sl(signal_type, current_price, tp_price, sl_price)
         else:
             tp_pct = config.get('strategy.take_profit_percent', 2.0)
             sl_pct = config.get('strategy.stop_loss_percent', 1.5)
@@ -474,6 +585,7 @@ class OrderManager:
             else:
                 tp_price = current_price * (1 - tp_pct / 100)
                 sl_price = current_price * (1 + sl_pct / 100)
+            tp_price, sl_price = self._validate_tp_sl(signal_type, current_price, tp_price, sl_price)
 
         if signal_type == "LONG":
             result = self.paper_engine.execute_buy(pair, quantity, current_price)

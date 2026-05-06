@@ -16,12 +16,60 @@ class PaperEngine:
         self.slippage = config.get('paper_trading.slippage_percent', 0.1)
         self.spread = config.get('paper_trading.spread_percent', 0.05)
 
+    def _get_min_quantity(self, pair: str) -> float:
+        """Мінімальна кількість для пари на Bybit Spot"""
+        min_qty_map = {
+            'BTCUSDT': 0.0001,
+            'ETHUSDT': 0.001,
+            'SOLUSDT': 0.01,
+            'BNBUSDT': 0.001,
+            'XRPUSDT': 0.1,
+            'DOGEUSDT': 1.0,
+            'ADAUSDT': 1.0,
+            'AVAXUSDT': 0.01,
+            'DOTUSDT': 0.01,
+            'LINKUSDT': 0.01,
+            'MATICUSDT': 1.0,
+            'UNIUSDT': 0.01,
+            'ATOMUSDT': 0.01,
+            'LTCUSDT': 0.001,
+            'ETCUSDT': 0.01,
+        }
+        return min_qty_map.get(pair, 0.001)
+
+    def _get_step_size(self, pair: str) -> float:
+        """Крок округлення для пари"""
+        step_map = {
+            'BTCUSDT': 0.00001,
+            'ETHUSDT': 0.0001,
+            'SOLUSDT': 0.001,
+            'DOGEUSDT': 0.1,
+            'ADAUSDT': 0.1,
+            'XRPUSDT': 0.01,
+        }
+        return step_map.get(pair, 0.0001)
+
+    def _normalize_quantity(self, pair: str, quantity: float) -> float:
+        """Нормалізація кількості відповідно до мінімуму та кроку"""
+        min_qty = self._get_min_quantity(pair)
+        step = self._get_step_size(pair)
+
+        if quantity < min_qty:
+            quantity = min_qty
+
+        # Округлення до step_size
+        quantity = round(quantity / step) * step
+        return round(quantity, 8)
+
     def execute_buy(self, pair: str, quantity: float, current_price: float) -> Optional[Dict]:
         """Виконання buy ордера (paper)"""
 
         if current_price <= 0:
             logger.error(f"❌ Некорректная цена для {pair}: {current_price}")
             return None
+
+        # Нормалізація кількості
+        quantity = self._normalize_quantity(pair, quantity)
 
         balance = self.db.get_balance("USDT", is_paper=True)
         required = quantity * current_price
@@ -46,7 +94,7 @@ class PaperEngine:
         trade_data = {
             "pair": pair,
             "side": OrderSide.BUY,
-            "entry_price": execution_price,  # ← має бути execution_price, а не 0
+            "entry_price": execution_price,
             "quantity": quantity,
             "commission": commission_amount,
             "slippage": slippage_amount,
@@ -84,16 +132,14 @@ class PaperEngine:
         # Комісія на закриття
         close_commission = (execution_price * trade.quantity) * (self.commission / 100)
 
-        # Розрахунок PnL (без комісій — вони окремо)
+        # Розрахунок PnL
         if trade.side == OrderSide.BUY:
             pnl = (execution_price - trade.entry_price) * trade.quantity - close_commission
             pnl_percent = ((execution_price - trade.entry_price) / trade.entry_price) * 100
-            # Повертаємо: вартість продажу мінус комісія закриття
             return_amount = execution_price * trade.quantity - close_commission
         else:  # SHORT
             pnl = (trade.entry_price - execution_price) * trade.quantity - close_commission
             pnl_percent = ((trade.entry_price - execution_price) / trade.entry_price) * 100
-            # Для SHORT повертаємо: заблокована сума + прибуток (або - збиток) мінус комісія
             return_amount = trade.entry_price * trade.quantity + pnl
 
         # Оновлюємо баланс
@@ -128,6 +174,9 @@ class PaperEngine:
             logger.error(f"❌ Некорректная цена для {pair}: {current_price}")
             return None
 
+        # Нормалізація кількості
+        quantity = self._normalize_quantity(pair, quantity)
+
         balance = self.db.get_balance("USDT", is_paper=True)
         position_value = quantity * current_price
 
@@ -150,7 +199,7 @@ class PaperEngine:
         trade_data = {
             "pair": pair,
             "side": OrderSide.SELL,
-            "entry_price": execution_price,  # ← має бути execution_price, а не 0
+            "entry_price": execution_price,
             "quantity": quantity,
             "commission": commission_amount,
             "slippage": slippage_amount,
