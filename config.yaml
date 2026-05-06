@@ -77,7 +77,6 @@ testing:
   create_trades_from_forecasts: true
   forecast_position_percent: 8
   forecast_duration_hours: 12
-
 trading:
   base_timeframe: 15m
   confirmation_timeframes: [15m, 1h]
