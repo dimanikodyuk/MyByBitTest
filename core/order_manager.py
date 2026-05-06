@@ -519,17 +519,39 @@ class OrderManager:
 
     def _create_auto_forecast(self, pair: str, signal_type: str, entry_price: float,
                               target_price: float, confidence: float):
-        """Створення прогнозу через web.app"""
+        """Створення прогнозу з індикаторами"""
         import threading as _threading
 
         balance = self.db.get_balance("USDT", is_paper=True)
-        forecast_percent = config.get('testing.forecast_position_percent', 8)  # зменшено з 25 до 8
+        forecast_percent = config.get('testing.forecast_position_percent', 8)
         position_usdt = max(balance * (forecast_percent / 100), 10.0)
         if position_usdt > balance:
             position_usdt = balance * 0.9
 
         position_quantity = round(position_usdt / entry_price, 6) if entry_price > 0 else 0
         position_usdt = position_quantity * entry_price
+
+        # Збираємо індикатори для опису
+        with self.cache_locks.get(pair, threading.Lock()):
+            df = self.cache[pair].get(self.base_timeframe)
+
+        indicators = {}
+        if df is not None and len(df) > 0:
+            last = df.iloc[-1]
+            indicators = {
+                'ema_fast_period': config.get('strategy.ema_fast', 21),
+                'ema_slow_period': config.get('strategy.ema_slow', 200),
+                'ema_fast': last.get(f'EMA_{config.get("strategy.ema_fast", 21)}', 0),
+                'ema_slow': last.get(f'EMA_{config.get("strategy.ema_slow", 200)}', 0),
+                'rsi': last.get('RSI', 50),
+                'macd': last.get('MACD', 0),
+                'macd_signal': last.get('MACD_Signal', 0),
+                'volume_ratio': last.get('Volume_Ratio', 1.0),
+                'adx': last.get('ADX', 0),
+                'atr_percent': last.get('ATR_Percent', 0),
+                'entry_price': entry_price,
+                'target_price': target_price,
+            }
 
         logger.info(f"🔮 [{pair}] Прогноз: {signal_type} | {entry_price:.4f} → {target_price:.4f} | "
                     f"${position_usdt:.2f}")
@@ -551,7 +573,9 @@ class OrderManager:
                         from web.app import create_forecast_internal as create_fc
                         await create_fc(
                             pair, signal_type, entry_price, target_price, confidence,
-                            position_quantity=position_quantity, position_usdt=position_usdt
+                            position_quantity=position_quantity, position_usdt=position_usdt,
+                            indicators_snapshot=indicators,
+                            description=None  # буде згенеровано автоматично
                         )
                     except Exception as e:
                         logger.error(f"❌ [{pair}] Помилка прогнозу: {e}")

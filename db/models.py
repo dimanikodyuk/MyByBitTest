@@ -143,6 +143,9 @@ class ForecastDB(Base):
     current_pnl = Column(Float, default=0.0)
     closed_pnl = Column(Float, default=0.0)
 
+    description = Column(Text, nullable=True)  # Додати після closed_pnl
+    indicators_snapshot = Column(Text, nullable=True)  # JSON з індикаторами на момент прогнозу
+
     __table_args__ = (
         Index('idx_forecasts_pair_status', 'pair', 'status'),
         Index('idx_forecasts_created_at', 'created_at'),
