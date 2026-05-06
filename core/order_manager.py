@@ -1,6 +1,7 @@
 import asyncio
 import threading
 import pandas as pd
+import numpy as np
 from typing import Dict, Optional, List, Any
 from datetime import datetime
 from db.operations import DatabaseOperations
@@ -15,7 +16,7 @@ from utils.logger import logger
 
 
 class OrderManager:
-    """Головний менеджер ордерів - приймає сигнали та виконує угоди"""
+    """Головний менеджер ордерів — приймає сигнали та виконує угоди"""
 
     def __init__(self, db_ops: DatabaseOperations, telegram_bot=None):
         self.db = db_ops
@@ -33,53 +34,61 @@ class OrderManager:
 
         self.strategies: Dict[str, TradingStrategy] = {}
         self.cache: Dict[str, Dict[str, pd.DataFrame]] = {}
-        self.cache_locks: Dict[str, threading.Lock] = {}  # Додано: блокування для кешу
+        self.cache_locks: Dict[str, threading.Lock] = {}
 
         self.running = True
         self.pairs = config.get('trading.pairs', ['BTCUSDT'])
 
-        self.base_timeframe = config.get('trading.base_timeframe', '5m')
+        self.base_timeframe = config.get('trading.base_timeframe', '15m')
         self.confirm_timeframes = config.get('trading.confirmation_timeframes', ['15m', '1h'])
         self.signal_check_interval = config.get('trading.signal_check_interval', 30)
 
         self._init_strategies()
         self._load_initial_data()
 
-        logger.info(f"✅ OrderManager ініціалізовано для {len(self.pairs)} пар")
+        logger.info(f"✅ OrderManager ініціалізовано для {len(self.pairs)} пар, базовий TF: {self.base_timeframe}")
 
     def _init_strategies(self):
         for pair in self.pairs:
             self.strategies[pair] = TradingStrategy(pair)
             self.cache[pair] = {}
-            self.cache_locks[pair] = threading.Lock()  # Додано: створення блокування для кожної пари
+            self.cache_locks[pair] = threading.Lock()
             logger.info(f"📊 Стратегія ініціалізована для {pair}")
 
     def _load_initial_data(self):
+        """Завантаження початкових даних для всіх пар і таймфреймів"""
+        needed_tfs = list(set([self.base_timeframe] + self.confirm_timeframes + ['1h', '4h']))
         for pair in self.pairs:
-            for tf in self.timeframes:
-                df = self.exchange.get_klines(pair, tf, limit=200)
-                if df is not None and len(df) > 0:
-                    df = self.strategies[pair].calculate_indicators(df)
-                    with self.cache_locks[pair]:  # Додано: блокування при записі
-                        self.cache[pair][tf] = df
-                    logger.debug(f"📥 Завантажено {len(df)} свічок для {pair} {tf}")
+            for tf in needed_tfs:
+                try:
+                    df = self.exchange.get_klines(pair, tf, limit=300)
+                    if df is not None and len(df) > 0:
+                        df = self.strategies[pair].calculate_indicators(df)
+                        with self.cache_locks[pair]:
+                            self.cache[pair][tf] = df
+                        logger.debug(f"📥 Завантажено {len(df)} свічок для {pair} {tf}")
+                except Exception as e:
+                    logger.error(f"Помилка завантаження {pair} {tf}: {e}")
 
     def on_new_candle(self, pair: str, candle: Dict):
+        """Обробка нової закритої свічки"""
         if not self.running:
             return
 
         try:
             timeframe = self.base_timeframe
-            logger.debug(f"🕯️ Нова свічка для {pair} о {candle.get('timestamp', 'unknown')}")
+            logger.debug(f"🕯️ Нова свічка {pair} @ {candle.get('timestamp', 'unknown')}")
 
             with self.cache_locks.get(pair, threading.Lock()):
                 if pair not in self.cache:
                     self.cache[pair] = {}
 
                 new_df = pd.DataFrame([candle])
-                if pair in self.cache and timeframe in self.cache[pair]:
-                    self.cache[pair][timeframe] = pd.concat([self.cache[pair][timeframe], new_df], ignore_index=True)
-                    self.cache[pair][timeframe] = self.cache[pair][timeframe].tail(200)
+
+                if timeframe in self.cache[pair] and self.cache[pair][timeframe] is not None:
+                    self.cache[pair][timeframe] = pd.concat(
+                        [self.cache[pair][timeframe], new_df], ignore_index=True
+                    ).tail(300)
                 else:
                     self.cache[pair][timeframe] = new_df
 
@@ -90,29 +99,29 @@ class OrderManager:
             self._check_exits_sync(pair)
 
         except Exception as e:
-            logger.error(f"Помилка обробки нової свічки для {pair}: {e}")
+            logger.error(f"Помилка обробки свічки {pair}: {e}")
             import traceback
             logger.error(traceback.format_exc())
 
     def analyze_market(self, pair: str) -> Dict[str, Any]:
-        with self.cache_locks.get(pair, threading.Lock()):  # Додано: блокування при читанні
+        """Аналіз ринку для пари"""
+        with self.cache_locks.get(pair, threading.Lock()):
             df = self.cache[pair].get(self.base_timeframe)
 
         if df is None or len(df) < 50:
-            logger.warning(f"⚠️ [{pair}] Недостатньо даних для аналізу")
             return {"error": "Недостатньо даних"}
 
         try:
             last = df.iloc[-1]
             prev = df.iloc[-2]
         except IndexError:
-            return {"error": "Недостатньо даних для аналізу"}
+            return {"error": "Недостатньо даних"}
 
         ema_fast = last.get(f'EMA_{config.get("strategy.ema_fast", 21)}', 0)
         ema_slow = last.get(f'EMA_{config.get("strategy.ema_slow", 200)}', 0)
         rsi = last.get('RSI', 50)
         macd = last.get('MACD', 0)
-        macd_signal = last.get('MACD_Signal', 0)
+        macd_signal_val = last.get('MACD_Signal', 0)
 
         trend = "📈 ВИСХІДНИЙ" if ema_fast > ema_slow else "📉 НИЗХІДНИЙ"
         trend_strength = abs((ema_fast - ema_slow) / ema_slow * 100) if ema_slow != 0 else 0
@@ -126,10 +135,10 @@ class OrderManager:
         macd_cross = "neutral"
         try:
             prev_macd = prev.get('MACD', 0)
-            prev_signal = prev.get('MACD_Signal', 0)
-            if macd > macd_signal and prev_macd <= prev_signal:
+            prev_sig = prev.get('MACD_Signal', 0)
+            if macd > macd_signal_val and prev_macd <= prev_sig:
                 macd_cross = "bullish"
-            elif macd < macd_signal and prev_macd >= prev_signal:
+            elif macd < macd_signal_val and prev_macd >= prev_sig:
                 macd_cross = "bearish"
         except:
             pass
@@ -138,20 +147,22 @@ class OrderManager:
         confidence = 0
         target_price = None
 
-        # LONG: RSI 35-70
-        if ema_fast > ema_slow and 35 <= rsi <= 70 and macd_cross == "bullish":
+        # Використовуємо ATR для розрахунку target
+        atr = float(last.get('ATR', last['close'] * 0.01))
+        tp_multiplier = config.get('strategy.atr_tp_multiplier', 2.5)
+
+        if ema_fast > ema_slow and 35 <= rsi <= 70 and (macd > macd_signal_val):
             forecast = "LONG"
-            confidence = 70 + (70 - rsi) / 70 * 20 if rsi < 50 else 70
-            target_price = last['close'] * (1 + config.get('strategy.take_profit_percent', 2.0) / 100)
-            logger.info(f"📊 [{pair}] АНАЛІЗ → Прогноз {forecast} (впевн.{confidence:.0f}%)")
+            confidence = 70 + min((70 - rsi) / 70 * 20, 20) if rsi < 50 else 70
+            target_price = last['close'] + atr * tp_multiplier
+            logger.info(f"📊 [{pair}] Прогноз {forecast} (впевн.{confidence:.0f}%)")
             self._create_auto_forecast(pair, "LONG", last['close'], target_price, confidence)
 
-        # SHORT: RSI 30-65
-        elif ema_fast < ema_slow and 30 <= rsi <= 65 and macd_cross == "bearish":
+        elif ema_fast < ema_slow and 30 <= rsi <= 65 and (macd < macd_signal_val):
             forecast = "SHORT"
-            confidence = 70 + (rsi - 30) / 70 * 20 if rsi > 50 else 70
-            target_price = last['close'] * (1 - config.get('strategy.take_profit_percent', 2.0) / 100)
-            logger.info(f"📊 [{pair}] АНАЛІЗ → Прогноз {forecast} (впевн.{confidence:.0f}%)")
+            confidence = 70 + min((rsi - 30) / 70 * 20, 20) if rsi > 50 else 70
+            target_price = last['close'] - atr * tp_multiplier
+            logger.info(f"📊 [{pair}] Прогноз {forecast} (впевн.{confidence:.0f}%)")
             self._create_auto_forecast(pair, "SHORT", last['close'], target_price, confidence)
 
         return {
@@ -164,11 +175,12 @@ class OrderManager:
             "rsi": round(rsi, 2),
             "rsi_signal": rsi_signal,
             "macd": round(macd, 6),
-            "macd_signal": round(macd_signal, 6),
+            "macd_signal": round(macd_signal_val, 6),
             "macd_cross": macd_cross,
             "forecast": forecast,
             "confidence": round(confidence, 2),
             "target_price": target_price,
+            "atr": round(atr, 4),
             "timestamp": datetime.now().isoformat()
         }
 
@@ -183,192 +195,181 @@ class OrderManager:
             logger.debug(f"⏰ [{pair}] Поза робочими годинами")
             return
 
-        # Перевірка cooldown після збиткової угоди
+        # Cooldown після збиткової угоди
         if self.is_in_cooldown(pair):
-            logger.debug(f"⏰ [{pair}] Cooldown активний, пропускаємо сигнал")
+            logger.debug(f"⏰ [{pair}] Cooldown активний")
             return
 
-        # Перевірка чи можна відкрити нову угоду
+        # Перевірка ризик-менеджера
         can_open, reason = self.risk_manager.can_open_trade(pair)
         if not can_open:
             logger.info(f"❌ [{pair}] Угода не створена: {reason}")
             return
 
-        # Отримуємо дані для основного таймфрейму з блокуванням
+        # Беремо дані базового таймфрейму
         with self.cache_locks.get(pair, threading.Lock()):
             df_base = self.cache[pair].get(self.base_timeframe)
 
-        if df_base is None or len(df_base) < 50:
+        if df_base is None or len(df_base) < self.strategies[pair].ema_slow:
             logger.debug(f"⚠️ [{pair}] Недостатньо даних: {len(df_base) if df_base is not None else 0}")
             return
 
         last = df_base.iloc[-1]
         prev = df_base.iloc[-2]
 
-        # Отримуємо значення індикаторів з безпечною перевіркою
-        ema_fast_val = last.get(f'EMA_{config.get("strategy.ema_fast", 21)}', 0)
-        ema_slow_val = last.get(f'EMA_{config.get("strategy.ema_slow", 200)}', 0)
-        rsi_val = last.get('RSI', 50)
-        macd_val = last.get('MACD', 0)
-        macd_signal_val = last.get('MACD_Signal', 0)
-        prev_macd = prev.get('MACD', 0)
-        prev_signal = prev.get('MACD_Signal', 0)
+        ema_fast_val = last.get(f'EMA_{config.get("strategy.ema_fast", 21)}', np.nan)
+        ema_slow_val = last.get(f'EMA_{config.get("strategy.ema_slow", 200)}', np.nan)
+        rsi_val = last.get('RSI', np.nan)
+        macd_val = last.get('MACD', np.nan)
+        macd_signal_val = last.get('MACD_Signal', np.nan)
+        prev_macd = prev.get('MACD', np.nan)
+        prev_signal = prev.get('MACD_Signal', np.nan)
 
-        macd_bullish = macd_val > macd_signal_val and prev_macd <= prev_signal
-        macd_bearish = macd_val < macd_signal_val and prev_macd >= prev_signal
+        # Якщо індикатори ще не розраховані — пропускаємо
+        if any(pd.isna(x) for x in [ema_fast_val, ema_slow_val, rsi_val, macd_val]):
+            logger.debug(f"⚠️ [{pair}] Індикатори ще не готові (NaN)")
+            return
 
-        # Перевірка об'єму
+        # Volume
         volume_ratio = last.get('Volume_Ratio', 1.0)
         if pd.isna(volume_ratio):
             volume_ratio = 1.0
-        min_volume = config.get('strategy.min_volume_ratio', 1.2)
+        min_volume = config.get('strategy.min_volume_ratio', 0.5)
+        volume_ok = volume_ratio >= min_volume
+
+        # MACD: крос АБО просто по стороні сигнальної лінії
+        macd_bullish = (macd_val > macd_signal_val) and (not pd.isna(prev_macd)) and (
+            macd_val > 0 or (prev_macd <= prev_signal)
+        )
+        macd_bearish = (macd_val < macd_signal_val) and (not pd.isna(prev_macd)) and (
+            macd_val < 0 or (prev_macd >= prev_signal)
+        )
 
         # LONG сигнал
         ema_ok_long = ema_fast_val > ema_slow_val
-        rsi_ok_long = 35 <= rsi_val <= 70
-        macd_ok_long = macd_bullish
-        volume_ok = volume_ratio > min_volume
+        rsi_ok_long = config.get('strategy.rsi_min_long', 35) <= rsi_val <= config.get('strategy.rsi_max_long', 70)
 
-        is_long = (ema_ok_long and rsi_ok_long and macd_ok_long and volume_ok)
+        is_long = ema_ok_long and rsi_ok_long and macd_bullish and volume_ok
 
         if is_long:
             logger.info(
-                f"🔍 [{pair}] Умови LONG: EMA:{ema_ok_long} RSI:{rsi_ok_long} MACD:{macd_ok_long} VOL:{volume_ok}")
+                f"🔍 [{pair}] Умови LONG: EMA✅ RSI={rsi_val:.1f}✅ MACD✅ VOL={volume_ratio:.2f}✅")
 
-            # Підтвердження на інших таймфреймах
             with self.cache_locks.get(pair, threading.Lock()):
                 df_15m = self.cache[pair].get('15m')
                 df_1h = self.cache[pair].get('1h')
+
             confirmed = self.strategies[pair].confirm_with_timeframe(df_15m, df_1h, "LONG")
 
             if confirmed:
-                tp_price = last['close'] * (1 + config.get('strategy.take_profit_percent', 2.0) / 100)
-                logger.info(f"🎯 [{pair}] LONG СИГНАЛ! Ціна={last['close']:.2f}, TP={tp_price:.2f}, RSI={rsi_val:.1f}")
-
+                tp_price, sl_price = self.strategies[pair].calculate_atr_tp_sl(df_base, "LONG")
+                logger.info(f"🎯 [{pair}] LONG СИГНАЛ! Ціна={last['close']:.4f} TP={tp_price:.4f} SL={sl_price:.4f}")
                 self._create_auto_forecast(pair, "LONG", last['close'], tp_price, 85)
-                self._execute_trade_sync(pair, "LONG", last['close'])
+                self._execute_trade_sync(pair, "LONG", last['close'], tp_price, sl_price)
             else:
-                logger.info(f"⚠️ [{pair}] LONG сигнал, але НЕМАЄ підтвердження на 15m/1h")
+                logger.info(f"⚠️ [{pair}] LONG сигнал без підтвердження 15m/1h")
             return
 
         # SHORT сигнал
         ema_ok_short = ema_fast_val < ema_slow_val
-        rsi_ok_short = 30 <= rsi_val <= 65
-        macd_ok_short = macd_bearish
+        rsi_ok_short = config.get('strategy.rsi_min_short', 30) <= rsi_val <= config.get('strategy.rsi_max_short', 65)
 
-        is_short = (ema_ok_short and rsi_ok_short and macd_ok_short and volume_ok)
+        is_short = ema_ok_short and rsi_ok_short and macd_bearish and volume_ok
 
         if is_short:
             logger.info(
-                f"🔍 [{pair}] Умови SHORT: EMA:{ema_ok_short} RSI:{rsi_ok_short} MACD:{macd_ok_short} VOL:{volume_ok}")
+                f"🔍 [{pair}] Умови SHORT: EMA✅ RSI={rsi_val:.1f}✅ MACD✅ VOL={volume_ratio:.2f}✅")
 
             with self.cache_locks.get(pair, threading.Lock()):
                 df_15m = self.cache[pair].get('15m')
                 df_1h = self.cache[pair].get('1h')
+
             confirmed = self.strategies[pair].confirm_with_timeframe(df_15m, df_1h, "SHORT")
 
             if confirmed:
-                tp_price = last['close'] * (1 - config.get('strategy.take_profit_percent', 2.0) / 100)
-                logger.info(f"🎯 [{pair}] SHORT СИГНАЛ! Ціна={last['close']:.2f}, TP={tp_price:.2f}, RSI={rsi_val:.1f}")
-
+                tp_price, sl_price = self.strategies[pair].calculate_atr_tp_sl(df_base, "SHORT")
+                logger.info(f"🎯 [{pair}] SHORT СИГНАЛ! Ціна={last['close']:.4f} TP={tp_price:.4f} SL={sl_price:.4f}")
                 self._create_auto_forecast(pair, "SHORT", last['close'], tp_price, 85)
-                self._execute_trade_sync(pair, "SHORT", last['close'])
+                self._execute_trade_sync(pair, "SHORT", last['close'], tp_price, sl_price)
             else:
-                logger.info(f"⚠️ [{pair}] SHORT сигнал, але НЕМАЄ підтвердження на 15m/1h")
-            return
+                logger.info(f"⚠️ [{pair}] SHORT сигнал без підтвердження 15m/1h")
 
-    def _execute_trade_sync(self, pair: str, signal_type: str, current_price: float):
-        """Виконання угоди з перевіркою Reward/Risk ratio"""
-
-        # Отримуємо баланс
+    def _execute_trade_sync(self, pair: str, signal_type: str, current_price: float,
+                             tp_price: float = None, sl_price: float = None):
+        """
+        Виконання угоди з ATR-based TP/SL.
+        TP/SL вже розраховані в _check_signals_sync через calculate_atr_tp_sl.
+        """
         balance = self.db.get_balance("USDT", is_paper=True)
 
-        tp_percent = config.get('strategy.take_profit_percent', 2.0)
-        sl_percent = config.get('strategy.stop_loss_percent', 1.5)
+        # Якщо TP/SL не передані — рахуємо з ATR
+        if tp_price is None or sl_price is None:
+            with self.cache_locks.get(pair, threading.Lock()):
+                df_base = self.cache[pair].get(self.base_timeframe)
+            if df_base is not None:
+                tp_price, sl_price = self.strategies[pair].calculate_atr_tp_sl(df_base, signal_type)
+            else:
+                tp_pct = config.get('strategy.take_profit_percent', 2.0)
+                sl_pct = config.get('strategy.stop_loss_percent', 1.5)
+                if signal_type == "LONG":
+                    tp_price = current_price * (1 + tp_pct / 100)
+                    sl_price = current_price * (1 - sl_pct / 100)
+                else:
+                    tp_price = current_price * (1 - tp_pct / 100)
+                    sl_price = current_price * (1 + sl_pct / 100)
 
-        # Перевірка Reward/Risk ratio
-        reward_risk_ratio = tp_percent / sl_percent
-        min_reward_risk = config.get('strategy.min_reward_risk_ratio', 1.5)
+        # Перевірка RR ratio
+        if signal_type == "LONG":
+            reward = tp_price - current_price
+            risk = current_price - sl_price
+        else:
+            reward = current_price - tp_price
+            risk = sl_price - current_price
 
-        if reward_risk_ratio < min_reward_risk:
-            logger.warning(f"⚠️ [{pair}] Reward/Risk ratio занизький: {reward_risk_ratio:.2f} < {min_reward_risk}")
+        if risk <= 0:
+            logger.warning(f"⚠️ [{pair}] Некоректний SL (risk={risk:.4f})")
+            return
+
+        rr_ratio = reward / risk
+        min_rr = config.get('strategy.min_reward_risk_ratio', 1.5)
+
+        if rr_ratio < min_rr:
+            logger.warning(f"⚠️ [{pair}] RR={rr_ratio:.2f} < мін {min_rr}, пропускаємо")
+            return
+
+        quantity = self.risk_manager.calculate_position_size(balance, current_price, sl_price, pair)
+
+        if quantity <= 0:
+            logger.warning(f"❌ [{pair}] Невірний об'єм: {quantity}")
             return
 
         if signal_type == "LONG":
-            tp_price = current_price * (1 + tp_percent / 100)
-            sl_price = current_price * (1 - sl_percent / 100)
-
-            # Перевірка чи TP/SL мають сенс
-            if tp_price <= current_price or sl_price >= current_price:
-                logger.warning(f"⚠️ [{pair}] Некоректні TP/SL для LONG: TP={tp_price:.2f}, SL={sl_price:.2f}")
-                return
-
-            quantity = self.risk_manager.calculate_position_size(balance, current_price, sl_price, pair)
-
-            if quantity <= 0:
-                logger.warning(f"❌ [{pair}] Невірний об'єм: {quantity}")
-                return
-
             result = self.paper_engine.execute_buy(pair, quantity, current_price)
-
-            if result:
-                self.db.update_trade(result['trade_id'], {
-                    'take_profit': tp_price,
-                    'stop_loss': sl_price
-                })
-
-                logger.info(f"✅ [{pair}] LONG угода відкрита: {quantity} @ {result['execution_price']:.2f} | "
-                            f"TP={tp_price:.2f} SL={sl_price:.2f} | RR={reward_risk_ratio:.2f}")
-
-                if self.telegram:
-                    self._safe_telegram_send({
-                        'pair': pair, 'side': 'LONG', 'quantity': quantity,
-                        'entry_price': result['execution_price'], 'tp': tp_price, 'sl': sl_price,
-                        'balance': balance - (quantity * current_price)
-                    }, 'trade')
-
-        elif signal_type == "SHORT":
-            tp_price = current_price * (1 - tp_percent / 100)
-            sl_price = current_price * (1 + sl_percent / 100)
-
-            # Перевірка чи TP/SL мають сенс
-            if tp_price >= current_price or sl_price <= current_price:
-                logger.warning(f"⚠️ [{pair}] Некоректні TP/SL для SHORT: TP={tp_price:.2f}, SL={sl_price:.2f}")
-                return
-
-            quantity = self.risk_manager.calculate_position_size(balance, current_price, sl_price, pair)
-
-            if quantity <= 0:
-                logger.warning(f"❌ [{pair}] Невірний об'єм: {quantity}")
-                return
-
+        else:
             result = self.paper_engine.execute_short(pair, quantity, current_price)
 
-            if result:
-                self.db.update_trade(result['trade_id'], {
-                    'take_profit': tp_price,
-                    'stop_loss': sl_price
-                })
+        if result:
+            self.db.update_trade(result['trade_id'], {
+                'take_profit': tp_price,
+                'stop_loss': sl_price
+            })
 
-                logger.info(f"✅ [{pair}] SHORT угода відкрита: {quantity} @ {result['execution_price']:.2f} | "
-                            f"TP={tp_price:.2f} SL={sl_price:.2f} | RR={reward_risk_ratio:.2f}")
+            logger.info(f"✅ [{pair}] {signal_type} відкрито: {quantity:.6f} @ {result['execution_price']:.4f} | "
+                        f"TP={tp_price:.4f} SL={sl_price:.4f} | RR={rr_ratio:.2f}")
 
-                if self.telegram:
-                    self._safe_telegram_send({
-                        'pair': pair, 'side': 'SHORT', 'quantity': quantity,
-                        'entry_price': result['execution_price'], 'tp': tp_price, 'sl': sl_price,
-                        'balance': balance
-                    }, 'trade')
+            if self.telegram:
+                self._safe_telegram_send({
+                    'pair': pair, 'side': signal_type, 'quantity': quantity,
+                    'entry_price': result['execution_price'], 'tp': tp_price, 'sl': sl_price,
+                    'balance': self.db.get_balance("USDT", is_paper=True)
+                }, 'trade')
 
-    def _safe_telegram_send(self, data: dict, type: str):
-        """Безпечна відправка повідомлень в Telegram з перевіркою циклу подій"""
+    def _safe_telegram_send(self, data, type: str):
+        """Безпечна відправка Telegram"""
         if not self.telegram:
             return
-
         try:
-            # Спроба отримати поточний цикл подій
             loop = asyncio.get_running_loop()
-            # Якщо цикл запущений - створюємо таск
             if type == 'trade':
                 loop.create_task(self.telegram.send_trade_notification(data))
             elif type == 'close':
@@ -376,74 +377,66 @@ class OrderManager:
             else:
                 loop.create_task(self.telegram.send_message(data))
         except RuntimeError:
-            # Немає запущеного циклу - створюємо новий
-            if type == 'trade':
-                asyncio.run(self.telegram.send_trade_notification(data))
-            elif type == 'close':
-                asyncio.run(self.telegram.send_close_notification(data))
-            else:
-                asyncio.run(self.telegram.send_message(data))
+            try:
+                if type == 'trade':
+                    asyncio.run(self.telegram.send_trade_notification(data))
+                elif type == 'close':
+                    asyncio.run(self.telegram.send_close_notification(data))
+                else:
+                    asyncio.run(self.telegram.send_message(data))
+            except Exception as e:
+                logger.error(f"Telegram помилка: {e}")
         except Exception as e:
-            logger.error(f"Помилка відправки Telegram: {e}")
+            logger.error(f"Telegram помилка: {e}")
 
     def is_in_cooldown(self, pair: str) -> bool:
-        """Перевірка чи пара в стані охолодження після збиткової угоди"""
+        """Cooldown після збиткової угоди"""
         if pair not in self.last_trade_close_time:
             return False
-
         last_close = self.last_trade_close_time[pair]
-        current = datetime.now()
-
-        # Отримуємо тривалість однієї свічки в секундах
-        timeframe_seconds = {
-            '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '1d': 86400
-        }
-        candle_seconds = timeframe_seconds.get(self.base_timeframe, 300)
-        cooldown_seconds = self.cooldown_candles * candle_seconds
-
-        return (current - last_close).total_seconds() < cooldown_seconds
+        tf_seconds = {'1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '1d': 86400}
+        candle_sec = tf_seconds.get(self.base_timeframe, 900)
+        cooldown_sec = self.cooldown_candles * candle_sec
+        return (datetime.now() - last_close).total_seconds() < cooldown_sec
 
     def record_trade_close(self, pair: str, pnl: float):
-        """Запис часу закриття угоди для cooldown"""
-        # Cooldown тільки для збиткових угод
+        """Запис часу закриття для cooldown"""
         if pnl <= 0:
             self.last_trade_close_time[pair] = datetime.now()
-            logger.info(f"📝 [{pair}] Записано cooldown після збиткової угоди (PnL={pnl:.2f})")
+            logger.info(f"📝 [{pair}] Cooldown після збитку (PnL={pnl:.2f})")
         else:
-            # Для прибуткових очищаємо cooldown
-            if pair in self.last_trade_close_time:
-                del self.last_trade_close_time[pair]
+            self.last_trade_close_time.pop(pair, None)
 
-    def _create_auto_forecast(self, pair: str, signal_type: str, entry_price: float, target_price: float,
-                              confidence: float):
-        import threading
+    def _create_auto_forecast(self, pair: str, signal_type: str, entry_price: float,
+                               target_price: float, confidence: float):
+        """Створення прогнозу через web.app"""
+        import threading as _threading
 
         balance = self.db.get_balance("USDT", is_paper=True)
-        forecast_percent = config.get('testing.forecast_position_percent', 50.0)
-        position_usdt = balance * (forecast_percent / 100) if balance > 0 else 10.0
+        forecast_percent = config.get('testing.forecast_position_percent', 25.0)
+        position_usdt = max(balance * (forecast_percent / 100), 10.0)
+        if position_usdt > balance:
+            position_usdt = balance * 0.9
 
-        min_trade_usdt = 10
-        if position_usdt < min_trade_usdt:
-            logger.warning(f"⚠️ [{pair}] Недостатньо балансу для прогнозу: {position_usdt:.2f} USDT")
-            position_usdt = min_trade_usdt if balance > min_trade_usdt else balance
-
-        position_quantity = position_usdt / entry_price if entry_price > 0 else 0
-        position_quantity = round(position_quantity, 6)
+        position_quantity = round(position_usdt / entry_price, 6) if entry_price > 0 else 0
         position_usdt = position_quantity * entry_price
 
-        logger.info(f"🔮 [{pair}] Прогноз: {signal_type} | {entry_price:.2f} → {target_price:.2f} | "
-                    f"Розмір: {position_quantity} (${position_usdt:.2f})")
+        logger.info(f"🔮 [{pair}] Прогноз: {signal_type} | {entry_price:.4f} → {target_price:.4f} | "
+                    f"${position_usdt:.2f}")
 
         def send_forecast():
             try:
-                import asyncio
+                import asyncio as _asyncio
                 try:
-                    loop = asyncio.get_event_loop()
+                    loop = _asyncio.get_event_loop()
+                    if loop.is_closed():
+                        loop = _asyncio.new_event_loop()
+                        _asyncio.set_event_loop(loop)
                 except RuntimeError:
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
+                    loop = _asyncio.new_event_loop()
+                    _asyncio.set_event_loop(loop)
 
-                async def create_forecast_internal():
+                async def _create():
                     try:
                         from web.app import create_forecast_internal as create_fc
                         await create_fc(
@@ -451,45 +444,48 @@ class OrderManager:
                             position_quantity=position_quantity, position_usdt=position_usdt
                         )
                     except Exception as e:
-                        logger.error(f"❌ [{pair}] Помилка створення прогнозу: {e}")
+                        logger.error(f"❌ [{pair}] Помилка прогнозу: {e}")
 
                 if loop.is_running():
-                    asyncio.create_task(create_forecast_internal())
+                    _asyncio.create_task(_create())
                 else:
-                    loop.run_until_complete(create_forecast_internal())
+                    loop.run_until_complete(_create())
             except Exception as e:
-                logger.error(f"❌ [{pair}] Помилка в потоці: {e}")
+                logger.error(f"❌ [{pair}] Помилка в потоці прогнозу: {e}")
 
-        thread = threading.Thread(target=send_forecast, daemon=True)
-        thread.start()
+        t = _threading.Thread(target=send_forecast, daemon=True)
+        t.start()
 
-    def _execute_trade_sync_with_size(self, pair: str, signal_type: str, current_price: float, quantity: float):
-        tp_percent = config.get('strategy.take_profit_percent', 2.0)
-        sl_percent = config.get('strategy.stop_loss_percent', 1.5)
+    def _execute_trade_sync_with_size(self, pair: str, signal_type: str,
+                                       current_price: float, quantity: float):
+        """Виконання угоди з явно вказаним розміром (для ручного виклику)"""
+        with self.cache_locks.get(pair, threading.Lock()):
+            df_base = self.cache[pair].get(self.base_timeframe)
+
+        tp_price, sl_price = (None, None)
+        if df_base is not None:
+            tp_price, sl_price = self.strategies[pair].calculate_atr_tp_sl(df_base, signal_type)
+        else:
+            tp_pct = config.get('strategy.take_profit_percent', 2.0)
+            sl_pct = config.get('strategy.stop_loss_percent', 1.5)
+            if signal_type == "LONG":
+                tp_price = current_price * (1 + tp_pct / 100)
+                sl_price = current_price * (1 - sl_pct / 100)
+            else:
+                tp_price = current_price * (1 - tp_pct / 100)
+                sl_price = current_price * (1 + sl_pct / 100)
 
         if signal_type == "LONG":
-            tp_price = current_price * (1 + tp_percent / 100)
-            sl_price = current_price * (1 - sl_percent / 100)
             result = self.paper_engine.execute_buy(pair, quantity, current_price)
-
-            if result:
-                self.db.update_trade(result['trade_id'], {
-                    'take_profit': tp_price,
-                    'stop_loss': sl_price
-                })
-                logger.info(f"✅ [{pair}] LONG угода відкрита: {quantity} @ {result['execution_price']:.2f}")
-
-        elif signal_type == "SHORT":
-            tp_price = current_price * (1 - tp_percent / 100)
-            sl_price = current_price * (1 + sl_percent / 100)
+        else:
             result = self.paper_engine.execute_short(pair, quantity, current_price)
 
-            if result:
-                self.db.update_trade(result['trade_id'], {
-                    'take_profit': tp_price,
-                    'stop_loss': sl_price
-                })
-                logger.info(f"✅ [{pair}] SHORT угода відкрита: {quantity} @ {result['execution_price']:.2f}")
+        if result:
+            self.db.update_trade(result['trade_id'], {
+                'take_profit': tp_price,
+                'stop_loss': sl_price
+            })
+            logger.info(f"✅ [{pair}] {signal_type} (ручний розмір) {quantity} @ {result['execution_price']:.4f}")
 
     async def close_trade_manually(self, trade_id: int, current_price: float = None):
         trade = self.db.get_trade_by_id(trade_id)
@@ -502,14 +498,18 @@ class OrderManager:
         result = self.paper_engine.execute_sell(trade.id, current_price)
 
         if result and self.telegram:
-            await self.telegram.send_message(f"🔴 ПРИМУСОВЕ ЗАКРИТТЯ\n{trade.pair} | PnL: {result['pnl']:.2f} USDT")
+            await self.telegram.send_message(
+                f"🔴 ПРИМУСОВЕ ЗАКРИТТЯ\n{trade.pair} | PnL: {result['pnl']:.2f} USDT"
+            )
 
         return result
 
     def _check_trailing_stop(self, pair: str):
-        """Перевірка трейлінг стопу для захисту прибутку"""
-        open_trades = self.db.get_open_trades(pair=pair, is_paper=True)
+        """Трейлінг стоп для захисту прибутку"""
+        if not config.get('strategy.trailing_stop', True):
+            return
 
+        open_trades = self.db.get_open_trades(pair=pair, is_paper=True)
         if not open_trades:
             return
 
@@ -517,61 +517,42 @@ class OrderManager:
         if not current_price:
             return
 
-        trailing_enabled = config.get('strategy.trailing_stop', True)
-        if not trailing_enabled:
-            return
-
-        activation_percent = config.get('strategy.trailing_activation_percent', 1.0)
-        trailing_distance = config.get('strategy.trailing_distance_percent', 0.5)
+        activation_pct = config.get('strategy.trailing_activation_percent', 1.0)
+        trailing_dist = config.get('strategy.trailing_distance_percent', 0.5)
 
         for trade in open_trades:
-            if trade.side == OrderSide.BUY:  # LONG
+            if trade.side == OrderSide.BUY:
                 current_profit = ((current_price - trade.entry_price) / trade.entry_price) * 100
-            else:  # SHORT
+            else:
                 current_profit = ((trade.entry_price - current_price) / trade.entry_price) * 100
 
-            if current_profit >= activation_percent:
+            if current_profit >= activation_pct:
                 if trade.side == OrderSide.BUY:
-                    new_sl = current_price * (1 - trailing_distance / 100)
+                    new_sl = current_price * (1 - trailing_dist / 100)
                     if new_sl > (trade.stop_loss or 0):
-                        old_sl = trade.stop_loss
                         self.db.update_trade(trade.id, {'stop_loss': new_sl})
-                        logger.info(
-                            f"📈 [{pair}] Трейлінг стоп LONG: {old_sl:.2f} → {new_sl:.2f} | Профіт: {current_profit:.1f}%")
-
+                        logger.info(f"📈 [{pair}] Trailing LONG SL → {new_sl:.4f} (profit={current_profit:.1f}%)")
                         if self.telegram:
                             self._safe_telegram_send(
-                                f"📈 *Trailing Stop Updated*\n"
-                                f"Pair: {pair}\n"
-                                f"Side: LONG\n"
-                                f"Profit: +{current_profit:.1f}%\n"
-                                f"Old SL: ${old_sl:.2f}\n"
-                                f"New SL: ${new_sl:.2f}",
+                                f"📈 *Trailing Stop*\n{pair} LONG\nProfit: +{current_profit:.1f}%\nNew SL: ${new_sl:.4f}",
                                 'message'
                             )
-                else:  # SHORT
-                    new_sl = current_price * (1 + trailing_distance / 100)
+                else:
+                    new_sl = current_price * (1 + trailing_dist / 100)
                     if new_sl < (trade.stop_loss or float('inf')):
-                        old_sl = trade.stop_loss
                         self.db.update_trade(trade.id, {'stop_loss': new_sl})
-                        logger.info(
-                            f"📉 [{pair}] Трейлінг стоп SHORT: {old_sl:.2f} → {new_sl:.2f} | Профіт: {current_profit:.1f}%")
-
+                        logger.info(f"📉 [{pair}] Trailing SHORT SL → {new_sl:.4f} (profit={current_profit:.1f}%)")
                         if self.telegram:
                             self._safe_telegram_send(
-                                f"📉 *Trailing Stop Updated*\n"
-                                f"Pair: {pair}\n"
-                                f"Side: SHORT\n"
-                                f"Profit: +{current_profit:.1f}%\n"
-                                f"Old SL: ${old_sl:.2f}\n"
-                                f"New SL: ${new_sl:.2f}",
+                                f"📉 *Trailing Stop*\n{pair} SHORT\nProfit: +{current_profit:.1f}%\nNew SL: ${new_sl:.4f}",
                                 'message'
                             )
 
     def _check_exits_sync(self, pair: str):
-        open_trades = self.db.get_open_trades(pair=pair, is_paper=True)
+        """Перевірка виходів за TP/SL"""
         self._check_trailing_stop(pair)
 
+        open_trades = self.db.get_open_trades(pair=pair, is_paper=True)
         if not open_trades:
             return
 
@@ -580,9 +561,8 @@ class OrderManager:
             return
 
         for trade in open_trades:
-            # Захист від None TP/SL — якщо не виставлені, пропускаємо
             if trade.take_profit is None or trade.stop_loss is None:
-                logger.warning(f"[{pair}] Trade {trade.id} не має TP/SL, пропускаємо перевірку виходу")
+                logger.warning(f"[{pair}] Trade {trade.id} без TP/SL, пропускаємо")
                 continue
 
             should_exit = False
@@ -590,24 +570,19 @@ class OrderManager:
 
             if trade.side == OrderSide.BUY:
                 if current_price >= trade.take_profit:
-                    should_exit = True
-                    exit_reason = "TAKE_PROFIT"
+                    should_exit, exit_reason = True, "TAKE_PROFIT"
                 elif current_price <= trade.stop_loss:
-                    should_exit = True
-                    exit_reason = "STOP_LOSS"
-            else:  # SELL / SHORT
+                    should_exit, exit_reason = True, "STOP_LOSS"
+            else:
                 if current_price <= trade.take_profit:
-                    should_exit = True
-                    exit_reason = "TAKE_PROFIT"
+                    should_exit, exit_reason = True, "TAKE_PROFIT"
                 elif current_price >= trade.stop_loss:
-                    should_exit = True
-                    exit_reason = "STOP_LOSS"
+                    should_exit, exit_reason = True, "STOP_LOSS"
 
             if should_exit:
                 result = self.paper_engine.execute_sell(trade.id, current_price)
-
                 if result:
-                    logger.info(f"💰 [{pair}] Угода закрита: {exit_reason} | PnL={result['pnl']:.2f} USDT")
+                    logger.info(f"💰 [{pair}] Закрито: {exit_reason} | PnL={result['pnl']:.4f} USDT")
                     self.record_trade_close(pair, result['pnl'])
 
                     if self.telegram:
@@ -621,7 +596,6 @@ class OrderManager:
 
     def can_trade_now(self) -> bool:
         hours_config = config.get('trading.trading_hours', {})
-
         if not hours_config.get('enabled', False):
             return True
 
@@ -629,7 +603,6 @@ class OrderManager:
         now = datetime.now(pytz.timezone(hours_config.get('timezone', 'Europe/Kiev')))
         start = datetime.strptime(hours_config.get('start', '09:00'), '%H:%M').time()
         end = datetime.strptime(hours_config.get('end', '21:00'), '%H:%M').time()
-
         return start <= now.time() <= end
 
     async def daily_reset_check(self):
@@ -645,6 +618,7 @@ class OrderManager:
             self.db.cleanup_old_logs(retention_days)
 
     async def run(self):
+        """Головний цикл"""
         self.start_time = datetime.now()
         logger.info("🔄 OrderManager основний цикл запущено")
 
@@ -655,28 +629,39 @@ class OrderManager:
             try:
                 await self.daily_reset_check()
 
+                # Оновлення цін прогнозів кожні 10 сек
                 if (datetime.now() - last_price_update).seconds >= 10:
                     try:
                         from web.app import update_forecast_prices
                         await update_forecast_prices()
                     except Exception as e:
-                        logger.debug(f"Помилка оновлення цін прогнозів: {e}")
+                        logger.debug(f"Помилка оновлення цін: {e}")
                     last_price_update = datetime.now()
 
+                # Аналіз кожні 5 хвилин
                 current_minute = datetime.now().minute
                 if current_minute != last_analysis_minute and current_minute % 5 == 0:
                     last_analysis_minute = current_minute
                     for pair in self.pairs:
                         try:
+                            # Оновлюємо дані перед аналізом
+                            df = self.exchange.get_klines(pair, self.base_timeframe, limit=300)
+                            if df is not None and len(df) > 0:
+                                df = self.strategies[pair].calculate_indicators(df)
+                                with self.cache_locks[pair]:
+                                    self.cache[pair][self.base_timeframe] = df
+
                             analysis = self.analyze_market(pair)
-                            if analysis.get('forecast') and analysis.get('confidence', 0) > 70:
+                            if analysis.get('forecast') and analysis.get('confidence', 0) > 65:
                                 logger.info(
-                                    f"📈 АКТИВНИЙ ПРОГНОЗ: {pair} {analysis['forecast']} з впевненістю {analysis['confidence']}%")
+                                    f"📈 ПРОГНОЗ: {pair} {analysis['forecast']} "
+                                    f"впевн.{analysis['confidence']:.0f}%"
+                                )
                         except Exception as e:
                             logger.debug(f"Помилка аналізу {pair}: {e}")
 
                 await asyncio.sleep(self.signal_check_interval)
 
             except Exception as e:
-                logger.error(f"❌ Помилка циклу OrderManager: {e}")
+                logger.error(f"❌ Помилка циклу: {e}")
                 await asyncio.sleep(5)

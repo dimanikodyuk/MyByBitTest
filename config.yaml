@@ -33,16 +33,24 @@ strategy:
   rsi_min: 35
   rsi_max: 70
   rsi_period: 14
+  # Окремі зони RSI для LONG та SHORT
   rsi_min_long: 35
   rsi_max_long: 70
   rsi_min_short: 30
   rsi_max_short: 65
+  # ATR-based TP/SL (замість фіксованих відсотків)
+  # SL = 1.5 * ATR, TP = 2.5 * ATR → RR ~1.67
+  atr_sl_multiplier: 1.5
+  atr_tp_multiplier: 2.5
+  # Фіксовані відсотки як fallback якщо ATR недоступний
   take_profit_percent: 2.0
   stop_loss_percent: 1.5
   min_reward_risk_ratio: 1.5
   macd_fast: 12
   macd_signal: 9
   macd_slow: 26
+  # Знижено поріг об'єму: 0.5 = половина від середнього
+  # (1.2 було занадто жорстко і блокувало більшість угод)
   min_volume_ratio: 0.5
   trailing_activation_percent: 1.0
   trailing_distance_percent: 0.5
@@ -56,9 +64,11 @@ telegram:
   notifications_enabled: true
 testing:
   create_trades_from_forecasts: true
-  forecast_position_percent: 25
+  # Зменшено з 25% до 15% — менший ризик на прогноз
+  forecast_position_percent: 15
 trading:
-  base_timeframe: 15m  # рекомендується
+  # 15m — оптимальний таймфрейм для внутрішньоденної торгівлі
+  base_timeframe: 15m
   confirmation_timeframes:
   - 15m
   - 1h
@@ -77,6 +87,8 @@ trading:
   - DOGEUSDT
   - ETCUSDT
   signal_check_interval: 30
+  # Cooldown: 3 свічки після збиткової угоди
+  cooldown_candles: 3
   trading_hours:
     enabled: false
     end: '21:00'

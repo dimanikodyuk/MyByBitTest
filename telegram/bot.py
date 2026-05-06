@@ -73,30 +73,34 @@ class TelegramBot:
         self.running = False
         logger.info("Telegram bot stopped")
 
-    async def send_message(self, text: str):
-        """Відправка повідомлення адміну (без форматування)"""
+    async def send_message(self, text: str, parse_mode: str = "Markdown"):
+        """Відправка повідомлення адміну з підтримкою форматування"""
         if not self.bot or not self.chat_id:
             return
 
         max_length = 4096
-        if len(text) <= max_length:
-            try:
+
+        # Для Markdown потрібно трохи скоротити через службові символи
+        if parse_mode == "Markdown" and len(text) > 4000:
+            text = text[:3950] + "..."
+
+        try:
+            await self.bot.send_message(
+                chat_id=self.chat_id,
+                text=text,
+                parse_mode=parse_mode if parse_mode else None
+            )
+        except Exception as e:
+            # Якщо Markdown не пройшов — пробуємо без форматування
+            if parse_mode == "Markdown":
+                logger.warning(f"Markdown failed, sending without formatting: {e}")
                 await self.bot.send_message(
                     chat_id=self.chat_id,
                     text=text,
                     parse_mode=None
                 )
-            except Exception as e:
+            else:
                 logger.error(f"Failed to send: {e}")
-        else:
-            for i in range(0, len(text), max_length):
-                part = text[i:i + max_length]
-                await self.bot.send_message(
-                    chat_id=self.chat_id,
-                    text=part,
-                    parse_mode=None
-                )
-                await asyncio.sleep(0.1)
 
     async def send_trade_notification(self, trade_data: dict):
         """Сповіщення про відкриття угоди"""

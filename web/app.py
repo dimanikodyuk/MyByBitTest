@@ -103,7 +103,8 @@ async def get_active_forecasts():
                 "expires_at": make_aware(f.expires_at).isoformat(),
                 "time_remaining": max(0, (make_aware(f.expires_at) - now).total_seconds()),
                 "status": f.status,
-                "profit_potential": ((f.target_price - f.entry_price) / f.entry_price) * 100 if f.entry_price > 0 else 0
+                # Виправлено: абсолютне значення для profit_potential
+                "profit_potential": (abs(f.target_price - f.entry_price) / f.entry_price) * 100 if f.entry_price > 0 else 0
             }
             for f in active
         ]
@@ -112,6 +113,7 @@ async def get_active_forecasts():
         return []
     finally:
         db.close()
+
 
 
 async def create_forecast_internal(pair, signal_type, entry_price, target_price, confidence,
@@ -148,6 +150,8 @@ async def create_forecast_internal(pair, signal_type, entry_price, target_price,
         db.add(forecast)
         db.commit()
 
+        time_left = 12
+
         forecast_dict = {
             "id": forecast_id,
             "pair": pair,
@@ -159,8 +163,8 @@ async def create_forecast_internal(pair, signal_type, entry_price, target_price,
             "position_quantity": position_quantity,
             "position_usdt": position_usdt,
             "created_at": now.isoformat(),
-            "expires_at": (now + timedelta(hours=4)).isoformat(),
-            "time_remaining": 4 * 3600,
+            "expires_at": (now + timedelta(hours=time_left)).isoformat(),
+            "time_remaining": time_left * 3600,
             "status": "active",
             "profit_potential": ((target_price - entry_price) / entry_price) * 100 if entry_price > 0 else 0
         }
@@ -1087,19 +1091,22 @@ async def get_settings():
     return {
         "trading": {
             "pairs": config.get('trading.pairs', ['BTCUSDT', 'ETHUSDT', 'SOLUSDT']),
-            "base_timeframe": config.get('trading.base_timeframe', '5m'),
+            "base_timeframe": config.get('trading.base_timeframe', '15m'),
             "signal_check_interval": config.get('trading.signal_check_interval', 30),
             "trading_hours": config.get('trading.trading_hours', {"enabled": False, "start": "09:00", "end": "21:00"}),
         },
         "strategy": {
-            "ema_fast": config.get('strategy.ema_fast', 50),
+            "ema_fast": config.get('strategy.ema_fast', 21),  # ВИПРАВЛЕНО: 21 замість 50
             "ema_slow": config.get('strategy.ema_slow', 200),
             "rsi_period": config.get('strategy.rsi_period', 14),
-            "rsi_min": config.get('strategy.rsi_min', 40),
-            "rsi_max": config.get('strategy.rsi_max', 60),
+            "rsi_min": config.get('strategy.rsi_min', 35),
+            "rsi_max": config.get('strategy.rsi_max', 70),
             "take_profit_percent": config.get('strategy.take_profit_percent', 2.0),
             "stop_loss_percent": config.get('strategy.stop_loss_percent', 1.5),
             "use_bollinger": config.get('strategy.use_bollinger', True),
+            # ДОДАНО: ATR множники
+            "atr_sl_multiplier": config.get('strategy.atr_sl_multiplier', 1.5),
+            "atr_tp_multiplier": config.get('strategy.atr_tp_multiplier', 2.5),
         },
         "risk": {
             "risk_per_trade": config.get('risk.risk_per_trade', 2.0),
@@ -1492,6 +1499,18 @@ async def root():
                     <div class="form-group"><label>🎯 Take Profit %</label><input type="number" id="tpPercent" step="0.5" value="2.0"></div>
                     <div class="form-group"><label>🛑 Stop Loss %</label><input type="number" id="slPercent" step="0.5" value="1.5"></div>
                     <div class="form-group"><label>📊 Bollinger Bands</label><input type="checkbox" id="useBollinger"></div>
+                    
+                    <div class="form-group" title="Множник ATR для Stop Loss (чим більше, тим ширший стоп)">
+                        <label>📊 ATR Stop Loss множник</label>
+                        <input type="number" id="atrSlMultiplier" step="0.1" value="1.5">
+                        <small style="color:#666;">Чим більше, тим ширший стоп-лосс (1.5 = стандарт)</small>
+                    </div>
+                    <div class="form-group" title="Множник ATR для Take Profit (чим більше, тим вища ціль)">
+                        <label>🎯 ATR Take Profit множник</label>
+                        <input type="number" id="atrTpMultiplier" step="0.1" value="2.5">
+                        <small style="color:#666;">Чим більше, тим вища ціль (2.5 = RR=1.67 при SL=1.5)</small>
+                    </div>
+                    
                 </div>
                 <h4 style="color:#667eea; margin-bottom:15px;">🛡️ Ризик-менеджмент</h4>
                 <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:15px;margin-bottom:25px;">
@@ -1848,6 +1867,9 @@ async def root():
             document.getElementById('maxDailyLoss').value = s.risk?.max_daily_loss || 5.0;
             document.getElementById('useBollinger').checked = s.strategy?.use_bollinger || false;
             document.getElementById('useKelly').checked = s.risk?.use_kelly || false;
+            document.getElementById('atrSlMultiplier').value = s.strategy?.atr_sl_multiplier || 1.5;
+            document.getElementById('atrTpMultiplier').value = s.strategy?.atr_tp_multiplier || 2.5;
+
             const t = await (await fetch('/api/settings/testing')).json();
             document.getElementById('createTradesFromForecasts').value = t.create_trades_from_forecasts ? 'true' : 'false';
             document.getElementById('forecastPositionPercent').value = t.forecast_position_percent;
@@ -1865,6 +1887,9 @@ async def root():
                 rsi_period: parseInt(document.getElementById('rsiPeriod').value),
                 rsi_min: parseInt(document.getElementById('rsiMin').value),
                 rsi_max: parseInt(document.getElementById('rsiMax').value),
+                atr_sl_multiplier: parseFloat(document.getElementById('atrSlMultiplier').value),
+                atr_tp_multiplier: parseFloat(document.getElementById('atrTpMultiplier').value),
+
                 take_profit_percent: parseFloat(document.getElementById('tpPercent').value),
                 stop_loss_percent: parseFloat(document.getElementById('slPercent').value),
                 use_bollinger: document.getElementById('useBollinger').checked
