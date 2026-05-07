@@ -152,6 +152,7 @@ listing_strategy:
   hold_minutes: 120                # Час утримання позиції (хвилин)
   min_liquidity_score: 0.3         # Мінімальна ліквідність (0-1)
 
+
 web:
   enable_charts: true
   enable_manual_close: true
