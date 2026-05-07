@@ -106,6 +106,29 @@
         <div class="next-forecast"><div>⏰ Наступний прогноз через</div><div class="timer-big" id="nextForecastTimer">--:--:--</div></div>
         <div class="stats-grid"><div class="stat-card"><div class="stat-value" id="balance">$0</div><div class="stat-label">Баланс</div></div><div class="stat-card"><div class="stat-value" id="lockedAmount">$0</div><div class="stat-label">🔒 Заблоковано</div></div><div class="stat-card"><div class="stat-value" id="openTrades">0</div><div class="stat-label">Активні позиції</div></div><div class="stat-card"><div class="stat-value" id="totalPnL">$0</div><div class="stat-label">Загальний PnL</div></div><div class="stat-card"><div class="stat-value" id="winRate">0%</div><div class="stat-label">Win Rate</div></div><div class="stat-card"><div class="stat-value" id="dailyPnL">$0</div><div class="stat-label">Сьогодні</div></div><div class="stat-card"><div class="stat-value" id="totalTrades">0</div><div class="stat-label">Всього угод</div></div></div>
         <div class="stats-grid"><div class="stat-card"><div class="stat-value" id="profitFactor">0</div><div class="stat-label">Profit Factor</div></div><div class="stat-card"><div class="stat-value" id="maxDrawdown">0</div><div class="stat-label">Max Drawdown</div></div><div class="stat-card"><div class="stat-value" id="avgPnL">$0</div><div class="stat-label">Середній PnL</div></div><div class="stat-card"><div class="stat-value" id="kelly">0%</div><div class="stat-label">Kelly</div></div></div>
+        <!-- Статус стратегій -->
+<div class="card" style="margin-bottom: 20px;">
+    <div class="card-header">
+        <h3>🎯 Активні стратегії</h3>
+    </div>
+    <div style="display: flex; gap: 20px; padding: 15px; flex-wrap: wrap;">
+        <div id="mainStrategyStatus" style="flex:1; min-width:150px; background:rgba(102,126,234,0.1); border-radius:15px; padding:12px; text-align:center;">
+            <div>📊 Основна стратегія</div>
+            <div style="font-size:20px; font-weight:700;" id="mainStrategyRunning">-</div>
+            <div style="font-size:11px; color:#888;">Пари: <span id="mainStrategyPairs">-</span></div>
+        </div>
+        <div id="newsStrategyStatus" style="flex:1; min-width:150px; background:rgba(102,126,234,0.1); border-radius:15px; padding:12px; text-align:center;">
+            <div>📰 Новинна стратегія</div>
+            <div style="font-size:20px; font-weight:700;" id="newsStrategyRunning">-</div>
+            <div style="font-size:11px; color:#888;">Позиція: <span id="newsStrategyPercent">-</span>%</div>
+        </div>
+        <div id="listingStrategyStatus" style="flex:1; min-width:150px; background:rgba(102,126,234,0.1); border-radius:15px; padding:12px; text-align:center;">
+            <div>🆕 Стратегія нових монет</div>
+            <div style="font-size:20px; font-weight:700;" id="listingStrategyRunning">-</div>
+            <div style="font-size:11px; color:#888;">Позиція: <span id="listingStrategyPercent">-</span>%</div>
+        </div>
+    </div>
+</div>
         <div class="card">
     <div class="card-header">
         <h3>📈 Відкриті позиції</h3>
@@ -213,10 +236,44 @@
 
     <!-- ЛОГИ -->
     <div id="tab-logs" class="tab">
-        <div class="card"><div class="card-header"><h3>📜 Логи</h3><div><select id="logLevelFilter"><option value="">Всі</option><option value="INFO">INFO</option><option value="WARNING">WARNING</option><option value="ERROR">ERROR</option></select><button class="btn btn-outline btn-sm" onclick="loadLogs(true)">Оновити</button><button class="btn btn-danger btn-sm" onclick="clearLogs()">Очистити</button></div></div>
-        <div class="table-wrapper" style="max-height:500px;overflow-y:auto"><table style="min-width:600px"><thead><tr><th>Час</th><th>Рівень</th><th>Модуль</th><th>Повідомлення</th></tr></thead><tbody id="logsBody">...</tbody></table></div>
-        <div style="text-align:center;padding:10px"><button class="btn btn-outline btn-sm" id="loadMoreBtn" onclick="loadMoreLogs()" style="display:none">📥 Більше</button></div></div>
+    <div class="card">
+        <div class="card-header">
+            <h3>📜 Логи</h3>
+            <div>
+                <select id="logCategoryFilter">
+                    <option value="">Всі категорії</option>
+                    <option value="trading">📊 Торгівля</option>
+                    <option value="news">📰 Новини</option>
+                    <option value="listing">🆕 Нові монети</option>
+                    <option value="web">🌐 Web UI</option>
+                    <option value="exchange">💱 Біржа</option>
+                    <option value="telegram">📱 Telegram</option>
+                    <option value="backtest">🔄 Бектест</option>
+                    <option value="system">⚙️ Система</option>
+                </select>
+                <select id="logLevelFilter">
+                    <option value="">Всі рівні</option>
+                    <option value="INFO">INFO</option>
+                    <option value="WARNING">WARNING</option>
+                    <option value="ERROR">ERROR</option>
+                </select>
+                <button class="btn btn-outline btn-sm" onclick="loadLogs(true)">Оновити</button>
+                <button class="btn btn-danger btn-sm" onclick="clearLogs()">Очистити</button>
+            </div>
+        </div>
+        <div class="table-wrapper" style="max-height:500px;overflow-y:auto">
+            <table style="min-width:600px">
+                <thead>
+                    <tr><th>Час</th><th>Рівень</th><th>Категорія</th><th>Модуль</th><th>Повідомлення</th></tr>
+                </thead>
+                <tbody id="logsBody">...</tbody>
+            </table>
+        </div>
+        <div style="text-align:center;padding:10px">
+            <button class="btn btn-outline btn-sm" id="loadMoreBtn" onclick="loadMoreLogs()" style="display:none">📥 Більше</button>
+        </div>
     </div>
+</div>
 
     <!-- БЕКТЕСТЕР -->
     <div id="tab-backtest" class="tab">
@@ -1036,6 +1093,118 @@ function displayBacktestResults(d) {
     }
 }
 
+async function loadStrategiesStatus() {
+    try {
+        const res = await fetch('/api/strategies/status');
+        const data = await res.json();
+
+        if (data.error) return;
+
+        // Основна стратегія
+        const mainRunning = document.getElementById('mainStrategyRunning');
+        if (mainRunning) {
+            mainRunning.innerHTML = data.main_strategy?.running ? '🟢 Активна' : '🔴 Зупинена';
+            mainRunning.style.color = data.main_strategy?.running ? '#00ff88' : '#ff4757';
+        }
+        document.getElementById('mainStrategyPairs').innerHTML = data.main_strategy?.pairs?.join(', ') || '-';
+
+        // Новинна стратегія
+        const newsRunning = document.getElementById('newsStrategyRunning');
+        if (newsRunning) {
+            const enabled = data.news_strategy?.enabled;
+            const running = data.news_strategy?.running;
+            if (!enabled) {
+                newsRunning.innerHTML = '⚪ Вимкнено';
+                newsRunning.style.color = '#888';
+            } else if (running) {
+                newsRunning.innerHTML = '🟢 Активна';
+                newsRunning.style.color = '#00ff88';
+            } else {
+                newsRunning.innerHTML = '🔴 Зупинена';
+                newsRunning.style.color = '#ff4757';
+            }
+        }
+        document.getElementById('newsStrategyPercent').innerHTML = data.news_strategy?.position_percent || '-';
+
+        // Стратегія нових монет
+        const listingRunning = document.getElementById('listingStrategyRunning');
+        if (listingRunning) {
+            const enabled = data.listing_strategy?.enabled;
+            const running = data.listing_strategy?.running;
+            if (!enabled) {
+                listingRunning.innerHTML = '⚪ Вимкнено';
+                listingRunning.style.color = '#888';
+            } else if (running) {
+                listingRunning.innerHTML = '🟢 Активна';
+                listingRunning.style.color = '#00ff88';
+            } else {
+                listingRunning.innerHTML = '🔴 Зупинена';
+                listingRunning.style.color = '#ff4757';
+            }
+        }
+        document.getElementById('listingStrategyPercent').innerHTML = data.listing_strategy?.position_percent || '-';
+
+    } catch(e) {
+        console.error('Помилка завантаження статусу стратегій:', e);
+    }
+}
+
+
+async function loadLogs(reset = true) {
+    if (reset) {
+        currentLogOffset = 0;
+        hasMoreLogs = true;
+        document.getElementById('loadMoreBtn').style.display = 'none';
+    }
+
+    const level = document.getElementById('logLevelFilter').value;
+    const category = document.getElementById('logCategoryFilter')?.value || '';
+
+    let url = `/api/logs?limit=50&offset=${currentLogOffset}`;
+    if (level) url += `&level=${level}`;
+    if (category) url += `&category=${category}`;
+
+    const res = await fetch(url);
+    const d = await res.json();
+    const b = document.getElementById('logsBody');
+
+    if (!b) return;
+
+    if (!d.logs?.length && currentLogOffset === 0) {
+        b.innerHTML = '<tr><td colspan="5">Немає логів</td></tr>';
+        return;
+    }
+
+    const getCategoryBadge = (cat) => {
+        const badges = {
+            'trading': '<span style="background:#00d4ff;color:#0a0a1a;padding:2px 8px;border-radius:12px;font-size:10px;">📊 Торгівля</span>',
+            'news': '<span style="background:#00ff88;color:#0a0a1a;padding:2px 8px;border-radius:12px;font-size:10px;">📰 Новини</span>',
+            'listing': '<span style="background:#ffa502;color:#0a0a1a;padding:2px 8px;border-radius:12px;font-size:10px;">🆕 Лістинги</span>',
+            'web': '<span style="background:#667eea;color:white;padding:2px 8px;border-radius:12px;font-size:10px;">🌐 Web</span>',
+            'exchange': '<span style="background:#f39c12;color:#0a0a1a;padding:2px 8px;border-radius:12px;font-size:10px;">💱 Біржа</span>',
+            'telegram': '<span style="background:#0088cc;color:white;padding:2px 8px;border-radius:12px;font-size:10px;">📱 Telegram</span>',
+            'backtest': '<span style="background:#9b59b6;color:white;padding:2px 8px;border-radius:12px;font-size:10px;">🔄 Бектест</span>',
+            'system': '<span style="background:#888;color:white;padding:2px 8px;border-radius:12px;font-size:10px;">⚙️ Система</span>'
+        };
+        return badges[cat] || `<span style="background:#555;color:white;padding:2px 8px;border-radius:12px;font-size:10px;">${cat}</span>`;
+    };
+
+    const rows = d.logs.map(l => `
+        <tr>
+            <td style="white-space:nowrap;">${new Date(l.timestamp).toLocaleString()}</td>
+            <td class="log-${l.level.toLowerCase()}">${l.level}</td>
+            <td>${getCategoryBadge(l.category)}</td>
+            <td>${l.module || '-'}</td>
+            <td>${l.message}</td>
+        </tr>
+    `).join('');
+
+    b.innerHTML = reset ? rows : b.innerHTML + rows;
+    hasMoreLogs = d.logs?.length === 50;
+    document.getElementById('loadMoreBtn').style.display = hasMoreLogs ? 'inline-block' : 'none';
+    currentLogOffset += d.logs?.length || 0;
+}
+
 function clearBacktestResults() {
     const resultsDiv = document.getElementById('backtestResults');
     const errorDiv = document.getElementById('backtestError');
@@ -1152,6 +1321,11 @@ setInterval(() => { if (document.getElementById('tab-forecasts').classList.conta
 setInterval(() => { if (document.getElementById('tab-analysis').classList.contains('active')) loadChart(); }, 30000);
 setInterval(() => { if (document.getElementById('tab-news').classList.contains('active')) loadNewsData(); }, 30000);
 setInterval(() => { if (document.getElementById('tab-listings').classList.contains('active')) loadListingData(); }, 30000);
+setInterval(() => {
+    if (document.getElementById('tab-dashboard').classList.contains('active')) {
+        loadStrategiesStatus();
+    }
+}, 30000);
 </script>
 </body>
 </html>

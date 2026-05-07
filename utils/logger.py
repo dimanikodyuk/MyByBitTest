@@ -3,21 +3,17 @@ from pathlib import Path
 from loguru import logger
 from utils.config_loader import config
 
-# Створення директорій
 Path("logs").mkdir(exist_ok=True)
 Path("data").mkdir(exist_ok=True)
 
-# Видалення старих налаштувань
 logger.remove()
 
-# Додавання виводу в консоль
 logger.add(
     sys.stdout,
     format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan> - <level>{message}</level>",
     level=config.get('logging.level', 'INFO')
 )
 
-# Додавання виводу у файл
 logger.add(
     config.get('logging.file', 'logs/trading.log'),
     rotation=config.get('logging.rotation', '7 days'),
@@ -28,13 +24,13 @@ logger.add(
 )
 
 
-# Додаємо синк для запису в БД з перевіркою
 class DatabaseLogSink:
-    """Синк для логування в базу даних"""
+    """Синк для логування в базу даних з категоріями"""
 
     def __init__(self):
         self._db_session = None
         self._table_exists = False
+        self._category_cache = {}
 
     def _check_table(self):
         try:
@@ -48,9 +44,37 @@ class DatabaseLogSink:
             self._table_exists = False
         return self._table_exists
 
+    def _get_category_from_module(self, module_name: str) -> str:
+        if module_name in self._category_cache:
+            return self._category_cache[module_name]
+
+        mappings = {
+            'web': 'web',
+            'order_manager': 'trading',
+            'strategy': 'trading',
+            'paper_engine': 'trading',
+            'risk_manager': 'trading',
+            'news_strategy': 'news',
+            'news_trader': 'news',
+            'listing_strategy': 'listing',
+            'listing_monitor': 'listing',
+            'bybit_client': 'exchange',
+            'telegram': 'telegram',
+            'backtest': 'backtest',
+            'config_loader': 'system',
+        }
+
+        category = 'system'
+        for key, cat in mappings.items():
+            if key in module_name:
+                category = cat
+                break
+
+        self._category_cache[module_name] = category
+        return category
+
     def write(self, message):
         try:
-            # Перевіряємо чи існує таблиця
             if not self._check_table():
                 return
 
@@ -60,11 +84,13 @@ class DatabaseLogSink:
                 module = record['name']
                 text = record['message']
 
+                category = self._get_category_from_module(module)
+
                 from db.database import SessionLocal
                 from db.models import Log
 
                 db = SessionLocal()
-                log_entry = Log(level=level, module=module, message=text)
+                log_entry = Log(level=level, module=module, category=category, message=text)
                 db.add(log_entry)
                 db.commit()
                 db.close()
@@ -72,7 +98,6 @@ class DatabaseLogSink:
             print(f"Помилка запису логу в БД: {e}")
 
 
-# Додаємо синк для БД
 try:
     db_sink = DatabaseLogSink()
     logger.add(db_sink.write, level="INFO")

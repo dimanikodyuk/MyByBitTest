@@ -1893,14 +1893,19 @@ async def update_settings(settings: Dict[str, Any]):
 
 
 @app.get("/api/logs")
-async def get_logs(level: Optional[str] = None, limit: int = 100, offset: int = 0):
+async def get_logs(level: Optional[str] = None, category: Optional[str] = None, limit: int = 100, offset: int = 0):
+    """Отримання логів з фільтрацією по рівню та категорії"""
     db = SessionLocal()
     try:
         query = db.query(Log)
         if level:
             query = query.filter(Log.level == level.upper())
-        logs = query.order_by(Log.timestamp.desc()).offset(offset).limit(limit).all()
+        if category:
+            query = query.filter(Log.category == category)
+
         total = query.count()
+        logs = query.order_by(Log.timestamp.desc()).offset(offset).limit(limit).all()
+
         def convert_to_kyiv(utc_time):
             if utc_time:
                 if utc_time.tzinfo is None:
@@ -1908,10 +1913,57 @@ async def get_logs(level: Optional[str] = None, limit: int = 100, offset: int = 
                 kyiv_time = utc_time.astimezone(KYIV_TZ)
                 return kyiv_time.isoformat()
             return None
+
         return {
-            "logs": [{"id": l.id, "level": l.level, "module": l.module, "message": l.message, "timestamp": convert_to_kyiv(l.timestamp)} for l in logs],
-            "total": total, "limit": limit, "offset": offset
+            "logs": [{
+                "id": l.id,
+                "level": l.level,
+                "module": l.module,
+                "category": l.category,
+                "message": l.message,
+                "timestamp": convert_to_kyiv(l.timestamp)
+            } for l in logs],
+            "total": total,
+            "limit": limit,
+            "offset": offset
         }
+    finally:
+        db.close()
+
+
+@app.get("/api/strategies/status")
+async def get_strategies_status():
+    """Отримання статусу всіх стратегій"""
+    if not order_manager_ref:
+        return {"error": "Order manager not available"}
+
+    return {
+        "main_strategy": {
+            "enabled": True,
+            "running": order_manager_ref.running,
+            "pairs": order_manager_ref.pairs,
+            "base_timeframe": order_manager_ref.base_timeframe
+        },
+        "news_strategy": {
+            "enabled": config.get('news_strategy.enabled', True),
+            "running": order_manager_ref.news_strategy.running if order_manager_ref.news_strategy else False,
+            "position_percent": config.get('news_strategy.position_percent', 5.0)
+        },
+        "listing_strategy": {
+            "enabled": config.get('listing_strategy.enabled', True),
+            "running": order_manager_ref.listing_strategy.running if order_manager_ref.listing_strategy else False,
+            "position_percent": config.get('listing_strategy.position_percent', 3.0)
+        }
+    }
+
+@app.get("/api/logs/categories")
+async def get_log_categories():
+    """Отримання списку доступних категорій логів"""
+    db = SessionLocal()
+    try:
+        categories = db.query(Log.category).distinct().all()
+        categories_list = [c[0] for c in categories if c[0]]
+        return {"categories": categories_list}
     finally:
         db.close()
 

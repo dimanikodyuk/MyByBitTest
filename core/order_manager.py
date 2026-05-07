@@ -498,10 +498,52 @@ class OrderManager:
 
             if self.telegram:
                 self._safe_telegram_send({
-                    'pair': pair, 'side': signal_type, 'quantity': quantity,
-                    'entry_price': result['execution_price'], 'tp': tp_price, 'sl': sl_price,
+                    'pair': pair,
+                    'side': signal_type,
+                    'quantity': quantity,
+                    'entry_price': result['execution_price'],
+                    'tp': tp_price,
+                    'sl': sl_price,
                     'balance': self.db.get_balance("USDT", is_paper=True)
                 }, 'trade')
+
+    def _safe_telegram_send(self, data, msg_type: str):
+        """Безпечна відправка Telegram (синхронна версія)"""
+        if not self.telegram:
+            return
+
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            try:
+                if msg_type == 'trade':
+                    loop.run_until_complete(self.telegram.send_trade_notification(data))
+                elif msg_type == 'close':
+                    loop.run_until_complete(self.telegram.send_close_notification(data))
+                elif msg_type == 'event':
+                    loop.run_until_complete(self.telegram.send_important_event(data.get('event_type'), data))
+                else:
+                    loop.run_until_complete(self.telegram.send_message(data))
+            finally:
+                loop.close()
+        except Exception as e:
+            logger.error(f"Telegram помилка: {e}")
+
+    async def send_telegram_message_async(self, text: str):
+        """Асинхронна відправка Telegram (для використання в async функціях)"""
+        if self.telegram:
+            await self.telegram.send_message(text)
+
+    async def send_telegram_trade_notification(self, trade_data: dict):
+        """Асинхронна відправка сповіщення про угоду"""
+        if self.telegram:
+            await self.telegram.send_trade_notification(trade_data)
+
+    async def send_telegram_close_notification(self, trade_data: dict):
+        """Асинхронна відправка сповіщення про закриття"""
+        if self.telegram:
+            await self.telegram.send_close_notification(trade_data)
 
     def _safe_telegram_send(self, data, type: str):
         """Безпечна відправка Telegram"""
@@ -753,10 +795,14 @@ class OrderManager:
                     if self.telegram:
                         new_balance = self.db.get_balance("USDT", is_paper=True)
                         self._safe_telegram_send({
-                            'pair': trade.pair, 'side': trade.side.value,
-                            'entry_price': trade.entry_price, 'exit_price': result['execution_price'],
-                            'pnl': result['pnl'], 'pnl_percent': result['pnl_percent'],
-                            'reason': exit_reason, 'balance': new_balance
+                            'pair': trade.pair,
+                            'side': trade.side.value,
+                            'entry_price': trade.entry_price,
+                            'exit_price': result['execution_price'],
+                            'pnl': result['pnl'],
+                            'pnl_percent': result['pnl_percent'],
+                            'reason': exit_reason,
+                            'balance': new_balance
                         }, 'close')
 
     def can_trade_now(self) -> bool:

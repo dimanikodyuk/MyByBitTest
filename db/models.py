@@ -111,12 +111,14 @@ class Log(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     level = Column(String(10), nullable=False)
     module = Column(String(50), nullable=True)
+    category = Column(String(50), nullable=True, default="system")  # НОВЕ ПОЛЕ
     message = Column(Text, nullable=False)
     timestamp = Column(DateTime, server_default=func.now())
 
     __table_args__ = (
         Index('idx_logs_timestamp', 'timestamp'),
         Index('idx_logs_level', 'level'),
+        Index('idx_logs_category', 'category'),
     )
 
 

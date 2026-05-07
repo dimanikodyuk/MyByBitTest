@@ -5,7 +5,6 @@ from typing import Optional
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.enums import ParseMode
 
 from utils.config_loader import config
 from utils.logger import logger
@@ -78,8 +77,6 @@ class TelegramBot:
         if not self.bot or not self.chat_id:
             return
 
-        max_length = 4096
-
         # Для Markdown потрібно трохи скоротити через службові символи
         if parse_mode == "Markdown" and len(text) > 4000:
             text = text[:3950] + "..."
@@ -102,39 +99,119 @@ class TelegramBot:
             else:
                 logger.error(f"Failed to send: {e}")
 
-    async def send_trade_notification(self, trade_data: dict):
-        """Сповіщення про відкриття угоди"""
-        emoji = "🟢" if trade_data.get('side') == "BUY" else "🔴"
-        text = f"""{emoji} NEW TRADE OPENED
+    async def send_important_event(self, event_type: str, data: dict):
+        """Відправка важливої події з різними форматами"""
 
-Pair: {trade_data.get('pair', 'N/A')}
-Side: {trade_data.get('side', 'N/A')}
-Quantity: {trade_data.get('quantity', 0)}
-Entry Price: ${trade_data.get('entry_price', 0):.2f}
-TP: ${trade_data.get('tp', 0):.2f}
-SL: ${trade_data.get('sl', 0):.2f}
-Balance: ${trade_data.get('balance', 0):.2f}
-Time: {datetime.now().strftime('%H:%M:%S')}"""
+        templates = {
+            'new_forecast': (
+                "🔮 *НОВИЙ ПРОГНОЗ*\n\n"
+                "📊 {pair} | {signal_type}\n"
+                "💰 Вхід: ${entry_price:.2f}\n"
+                "🎯 Ціль: ${target_price:.2f}\n"
+                "📈 Впевненість: {confidence}%\n"
+                "💵 Позиція: ${position_usdt:.2f}"
+            ),
+            'forecast_hit': (
+                "🎯 *ПРОГНОЗ ДОСЯГНУТО!*\n\n"
+                "📊 {pair} | {signal_type}\n"
+                "💰 Вхід: ${entry_price:.2f}\n"
+                "🎯 Ціль: ${target_price:.2f}\n"
+                "📈 Прибуток: +{profit_pct:.1f}%\n"
+                "💵 PnL: ${pnl:.2f}"
+            ),
+            'daily_limit_hit': (
+                "⚠️ *ДЕННИЙ ЛІМІТ ЗБИТКУ ДОСЯГНУТО!*\n\n"
+                "📉 Денний PnL: ${daily_pnl:.2f}\n"
+                "🎯 Ліміт: {limit}%\n"
+                "🛑 Торгівля призупинена до завтра"
+            ),
+            'new_listing_trade': (
+                "🆕 *НОВА МОНЕТА НА БІРЖІ!*\n\n"
+                "🪙 Монета: {symbol}\n"
+                "💰 Вхід: ${entry_price:.4f}\n"
+                "💵 Позиція: ${position_usdt:.2f}\n"
+                "🔥 Ліквідність: {liquidity:.1f}%\n"
+                "⏰ Час: {time}"
+            ),
+            'news_trade': (
+                "📰 *УГОДА ЗА НОВИНОЮ*\n\n"
+                "📌 {title}\n"
+                "📊 {pair} | {side}\n"
+                "💰 Вхід: ${entry_price:.2f}\n"
+                "🎭 Тональність: {sentiment:.1f}\n"
+                "💵 Позиція: ${position_usdt:.2f}"
+            ),
+            'bot_start': (
+                "✅ *БОТ ЗАПУЩЕНО*\n\n"
+                "🤖 AutoTrading Bot v3.0\n"
+                "📊 Режим: Paper Trading\n"
+                "🌐 Web UI: http://localhost:8000"
+            ),
+            'bot_stop': (
+                "🛑 *БОТ ЗУПИНЕНО*\n\n"
+                "Торгівля призупинена\n"
+                "Для запуску використовуйте /start"
+            ),
+            'error': (
+                "🚨 *ПОМИЛКА БОТА*\n\n"
+                "⚠️ Тип: {error_type}\n"
+                "📝 {message}"
+            )
+        }
+
+        template = templates.get(event_type)
+        if not template:
+            return
+
+        try:
+            text = template.format(**data)
+            await self.send_message(text)
+        except Exception as e:
+            logger.error(f"Помилка форматування сповіщення {event_type}: {e}")
+
+    async def send_trade_notification(self, trade_data: dict):
+        """Сповіщення про відкриття угоди (розширене)"""
+        emoji = "🟢" if trade_data.get('side') == "BUY" else "🔴"
+        side_text = "LONG" if trade_data.get('side') == "BUY" else "SHORT"
+
+        text = f"""{emoji} *НОВА УГОДА ВІДКРИТА* {emoji}
+
+    📊 {trade_data.get('pair')} | {side_text}
+    💰 Вхід: ${trade_data.get('entry_price', 0):.2f}
+    📦 Кількість: {trade_data.get('quantity', 0):.6f}
+    🎯 TP: ${trade_data.get('tp', 0):.2f}
+    🛑 SL: ${trade_data.get('sl', 0):.2f}
+    💵 Баланс: ${trade_data.get('balance', 0):.2f}
+    ⏰ Час: {datetime.now().strftime('%H:%M:%S')}"""
 
         await self.send_message(text)
 
     async def send_close_notification(self, trade_data: dict):
-        """Сповіщення про закриття угоди"""
+        """Сповіщення про закриття угоди (розширене)"""
         pnl = trade_data.get('pnl', 0)
         emoji = "✅" if pnl > 0 else "❌"
         sign = "+" if pnl > 0 else ""
 
-        text = f"""{emoji} TRADE CLOSED
+        reason_map = {
+            'TAKE_PROFIT': '🎯 Тейк-профіт',
+            'STOP_LOSS': '🛑 Стоп-лос',
+            'TIME_EXIT': '⏰ Час вийшов',
+            'REVERSE_SIGNAL': '🔄 Протилежний сигнал',
+            'MANUAL': '✋ Ручне закриття'
+        }
+        reason_text = reason_map.get(trade_data.get('reason', ''), trade_data.get('reason', 'Невідомо'))
 
-Pair: {trade_data.get('pair', 'N/A')}
-Side: {trade_data.get('side', 'N/A')}
-Entry: ${trade_data.get('entry_price', 0):.2f}
-Exit: ${trade_data.get('exit_price', 0):.2f}
-PnL: {sign}{pnl:.2f} USDT ({sign}{trade_data.get('pnl_percent', 0):.2f}%)
-Reason: {trade_data.get('reason', 'TP/SL')}
-Balance: ${trade_data.get('balance', 0):.2f}"""
+        text = f"""{emoji} *УГОДУ ЗАКРИТО* {emoji}
+
+    📊 {trade_data.get('pair')} | {trade_data.get('side')}
+    💰 Вхід: ${trade_data.get('entry_price', 0):.2f}
+    💸 Вихід: ${trade_data.get('exit_price', 0):.2f}
+    📈 PnL: {sign}{pnl:.2f} USDT ({sign}{trade_data.get('pnl_percent', 0):.2f}%)
+    📋 Причина: {reason_text}
+    💵 Новий баланс: ${trade_data.get('balance', 0):.2f}"""
 
         await self.send_message(text)
+
 
     async def send_error(self, error_msg: str, error_type: str = "ERROR", traceback_info: str = None):
         """Сповіщення про помилку"""
