@@ -1,21 +1,24 @@
-# check_trades.py
+# remove_test_coin.py
 from db.database import SessionLocal
-from db.models import Trade, OrderStatus
+from db.models import ListingTrade, ListingBalance
 
 db = SessionLocal()
 
-print("=" * 50)
-print("ВІДКРИТІ УГОДИ:")
-open_trades = db.query(Trade).filter(Trade.status == OrderStatus.PENDING).all()
-for t in open_trades:
-    print(f"  ID={t.id}, Pair={t.pair}, Side={t.side}, Entry={t.entry_price}")
+# Видаляємо тестові угоди
+deleted = db.query(ListingTrade).filter(
+    (ListingTrade.symbol == 'TEST') | (ListingTrade.pair == 'TESTUSDT')
+).delete()
+print(f"Видалено {deleted} тестових угод")
 
-print(f"\nВсього відкритих: {len(open_trades)}")
+# Скидаємо баланс (опціонально)
+balance = db.query(ListingBalance).first()
+if balance:
+    balance.amount = 100.0
+    balance.total_pnl = 0
+    balance.total_trades = 0
+    balance.win_trades = 0
+    print("Баланс скинуто до $100")
 
-print("\n" + "=" * 50)
-print("ОСТАННІ 5 УГОД:")
-recent = db.query(Trade).order_by(Trade.id.desc()).limit(5).all()
-for t in recent:
-    print(f"  ID={t.id}, Pair={t.pair}, Status={t.status}, PnL={t.pnl}")
-
+db.commit()
 db.close()
+print("Готово!")

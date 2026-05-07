@@ -789,7 +789,7 @@ class OrderManager:
         self.start_time = datetime.now()
         logger.info("🔄 OrderManager основний цикл запущено")
 
-        # ========== ЗАПУСК ДОДАТКОВИХ СТРАТЕГІЙ ==========
+        # ========== ДОДАТИ ЦЕ ==========
         # Запуск новинного трейдера
         if config.get('news_trading.enabled', True):
             try:
@@ -809,6 +809,7 @@ class OrderManager:
                 logger.info("🆕 Монітор нових лістингів запущено")
             except Exception as e:
                 logger.error(f"Помилка запуску монітора лістингів: {e}")
+        # ===============================
 
         last_price_update = datetime.now()
         last_analysis_minute = -1

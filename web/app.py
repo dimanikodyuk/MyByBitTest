@@ -1266,6 +1266,67 @@ async def run_backtest(request: Dict[str, Any]):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/listing/close/{trade_id}")
+async def close_listing_trade(trade_id: int, price: float = None):
+    """Закриття угоди нової монети"""
+    db = SessionLocal()
+    try:
+        from db.models import ListingTrade, ListingBalance
+
+        trade = db.query(ListingTrade).filter(ListingTrade.id == trade_id).first()
+        if not trade:
+            raise HTTPException(status_code=404, detail="Угоду не знайдено")
+
+        if trade.status != "open":
+            return {"status": "error", "message": f"Угода вже {trade.status}"}
+
+        # Отримуємо поточну ціну, якщо не передана
+        if price is None or price <= 0:
+            from exchange.bybit_client import BybitClient
+            exchange = BybitClient()
+            price = exchange.get_current_price(trade.pair)
+
+            # Якщо ціна не отримана (наприклад, TESTUSDT), використовуємо entry_price
+            if not price or price <= 0:
+                price = trade.entry_price
+                logger.warning(f"Не вдалося отримати ціну для {trade.pair}, використовуємо entry_price")
+
+        # Розраховуємо PnL
+        pnl = (price - trade.entry_price) * trade.quantity
+        pnl_percent = ((price - trade.entry_price) / trade.entry_price) * 100 if trade.entry_price > 0 else 0
+
+        # Оновлюємо угоду
+        trade.exit_price = price
+        trade.exit_time = datetime.now()
+        trade.pnl = pnl
+        trade.pnl_percent = pnl_percent
+        trade.status = "closed"
+        trade.exit_reason = "manual_close"
+
+        # Оновлюємо баланс
+        balance = db.query(ListingBalance).first()
+        if balance:
+            balance.amount = balance.amount + trade.position_usdt + pnl
+            balance.total_pnl += pnl
+            balance.total_trades += 1
+            if pnl > 0:
+                balance.win_trades += 1
+        else:
+            balance = ListingBalance(amount=100.0 + pnl, initial_balance=100.0, total_pnl=pnl, total_trades=1,
+                                     win_trades=1 if pnl > 0 else 0)
+            db.add(balance)
+        db.commit()
+
+        logger.info(f"✅ Ручне закриття {trade.symbol}: PnL=${pnl:.2f} ({pnl_percent:.1f}%)")
+        return {"status": "success", "pnl": pnl, "pnl_percent": pnl_percent, "exit_price": price}
+
+    except Exception as e:
+        logger.error(f"Помилка закриття угоди {trade_id}: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
 @app.get("/api/backtest/history")
 async def get_backtest_history(limit: int = 20, offset: int = 0):
     """Отримання історії бектестів"""

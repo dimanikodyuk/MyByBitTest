@@ -158,3 +158,5 @@ web:
   enable_web_push: true
   host: 0.0.0.0
   port: 8000
+
+news_api_key: "5e34034d9e5e43deb165143dbd2d8448"  # Якщо немає ключа, залишити порожнім

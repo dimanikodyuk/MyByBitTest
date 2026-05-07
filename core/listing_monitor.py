@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from sqlalchemy.orm import Session
 from db.database import SessionLocal
-from db.news_models import ListingTrade, ListingBalance
+from db.models import ListingTrade, ListingBalance
 from exchange.bybit_client import BybitClient
 from utils.config_loader import config
 from utils.logger import logger
@@ -61,43 +61,66 @@ class ListingMonitor:
         Отримання анонсів нових лістингів з Bybit
         """
         try:
-            url = "https://announcements.bybit.com/api/announcements"
+            # Використовуємо правильний API ендпоінт
+            url = "https://announcements.bybit.com/api/announcement/list"
             params = {
-                "category": "listing",
-                "limit": 20,
-                "language": "en_US"
+                "lang": "en-US",
+                "page": 1,
+                "limit": 20
             }
 
-            response = requests.get(url, params=params, timeout=10)
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            }
+
+            response = requests.get(url, params=params, headers=headers, timeout=10)
+
+            if not response.text:
+                return []
+
             data = response.json()
-
             announcements = []
-            if data.get("result", {}).get("items"):
-                for item in data["result"]["items"]:
-                    title = item.get("title", "")
 
-                    if "listing" in title.lower() or "new" in title.lower():
-                        match = re.search(r'([A-Z]{3,10})', title)
-                        symbol = match.group(1) if match else None
+            # Спробуємо різні структури відповіді
+            items = []
+            if data.get("result", {}).get("data"):
+                items = data["result"]["data"]
+            elif data.get("data"):
+                items = data["data"]
+            elif isinstance(data, list):
+                items = data
 
-                        if symbol:
-                            announcements.append({
-                                "title": title,
-                                "symbol": symbol,
-                                "pair": f"{symbol}USDT",
-                                "url": item.get("url", ""),
-                                "published_at": datetime.fromtimestamp(item.get("releaseTime", 0) / 1000) if item.get("releaseTime") else datetime.now()
-                            })
+            for item in items:
+                title = item.get("title", "")
+                if not title:
+                    continue
+
+                if "listing" in title.lower() or "new" in title.lower() or "available" in title.lower():
+                    # Шукаємо символ монети в заголовку
+                    match = re.search(r'([A-Z]{3,10})', title)
+                    symbol = match.group(1) if match else None
+
+                    if symbol and symbol not in ['USD', 'USDT', 'BTC', 'ETH', 'BNB']:
+                        announcements.append({
+                            "title": title,
+                            "symbol": symbol,
+                            "pair": f"{symbol}USDT",
+                            "url": item.get("url", ""),
+                            "published_at": datetime.now()
+                        })
 
             return announcements
 
         except Exception as e:
-            logger.error(f"Помилка отримання анонсів Bybit: {e}")
+            logger.debug(f"Помилка отримання анонсів Bybit: {e}")
             return []
 
     def execute_trade(self, db: Session, listing: Dict):
         """Виконання угоди на нову монету"""
-        import asyncio
+        # Перевірка на тестову монету
+        if listing["symbol"] == "TEST" or listing["pair"] == "TESTUSDT":
+            logger.warning(f"Пропускаємо тестову монету {listing['symbol']}")
+            return None
 
         balance = self.get_balance(db)
         position_usdt = balance * (self.position_percent / 100)
@@ -112,15 +135,9 @@ class ListingMonitor:
         current_price = self.exchange.get_current_price(pair)
 
         retries = 5
-        while not current_price and retries > 0:
-            try:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                loop.run_until_complete(asyncio.sleep(2))
-                loop.close()
-            except:
-                import time
-                time.sleep(2)
+        while (not current_price or current_price <= 0) and retries > 0:
+            import time
+            time.sleep(2)
             current_price = self.exchange.get_current_price(pair)
             retries -= 1
 
@@ -130,13 +147,12 @@ class ListingMonitor:
 
         quantity = position_usdt / current_price
 
+        # Мінімальна кількість
         min_qty = 0.001
         if "BTC" in pair:
             min_qty = 0.0001
         elif "DOGE" in pair:
             min_qty = 1.0
-        elif "SHIB" in pair:
-            min_qty = 100.0
 
         if quantity < min_qty:
             quantity = min_qty
@@ -152,8 +168,9 @@ class ListingMonitor:
         trade = ListingTrade(
             symbol=listing["symbol"],
             pair=pair,
+            exchange="Bybit",
             listing_time=listing["published_at"],
-            announcement_url=listing["url"],
+            announcement_url=listing.get("url", ""),
             entry_price=current_price,
             entry_time=datetime.now(),
             quantity=quantity,

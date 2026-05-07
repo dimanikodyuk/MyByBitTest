@@ -7,10 +7,9 @@ import asyncio
 import requests
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
-from textblob import TextBlob
 from sqlalchemy.orm import Session
 from db.database import SessionLocal
-from db.news_models import NewsTrade, NewsBalance
+from db.models import NewsTrade, NewsBalance
 from exchange.bybit_client import BybitClient
 from utils.config_loader import config
 from utils.logger import logger
@@ -20,7 +19,7 @@ class NewsTrader:
     """Торгівля на основі новин"""
 
     def __init__(self):
-        self.api_key = config.news_api_key
+        self.api_key = config.get('news_api_key', '')
         self.exchange = BybitClient()
         self.enabled = config.get('news_trading.enabled', True)
         self.initial_balance = config.get('news_trading.initial_balance', 100.0)
@@ -39,6 +38,9 @@ class NewsTrader:
         ])
 
         self.running = True
+
+        if not self.api_key:
+            logger.warning("⚠️ NewsAPI ключ не налаштовано. Новинна стратегія працюватиме в демо-режимі")
 
     def get_balance(self, db: Session) -> float:
         """Отримання поточного балансу"""
@@ -83,17 +85,18 @@ class NewsTrader:
             if keyword in text:
                 bearish_score += 1
 
-        # TextBlob аналіз (якщо доступний)
+        # Простий аналіз без TextBlob (якщо не встановлено)
         try:
+            from textblob import TextBlob
             blob = TextBlob(f"{title}. {description}")
-            sentiment = blob.sentiment.polarity  # -1 до 1
+            sentiment = blob.sentiment.polarity
         except:
             sentiment = 0
 
         # Комбінований score
         keyword_score = (bullish_score - bearish_score) / max(len(self.bullish_keywords), 1)
         final_score = (sentiment + keyword_score) / 2
-        final_score = max(-1, min(1, final_score))  # Обмежуємо
+        final_score = max(-1, min(1, final_score))
 
         if final_score > 0.3:
             return final_score, "LONG"
@@ -105,8 +108,8 @@ class NewsTrader:
     def get_crypto_news(self, limit: int = 20) -> List[Dict]:
         """Отримання крипто-новин з NewsAPI"""
         if not self.api_key:
-            logger.warning("NewsAPI ключ не налаштовано")
-            return []
+            # Демо-новини для тестування
+            return self._get_demo_news(limit)
 
         try:
             url = "https://newsapi.org/v2/everything"
@@ -129,18 +132,44 @@ class NewsTrader:
                         "description": a.get("description", ""),
                         "url": a.get("url", ""),
                         "source": a.get("source", {}).get("name", ""),
-                        "published_at": datetime.strptime(a.get("publishedAt", ""), "%Y-%m-%dT%H:%M:%SZ") if a.get(
-                            "publishedAt") else datetime.now()
+                        "published_at": datetime.strptime(a.get("publishedAt", ""), "%Y-%m-%dT%H:%M:%SZ") if a.get("publishedAt") else datetime.now()
                     }
                     for a in articles
                 ]
             else:
                 logger.error(f"NewsAPI помилка: {data.get('message')}")
-                return []
+                return self._get_demo_news(limit)
 
         except Exception as e:
             logger.error(f"Помилка отримання новин: {e}")
-            return []
+            return self._get_demo_news(limit)
+
+    def _get_demo_news(self, limit: int = 5) -> List[Dict]:
+        """Демо-новини для тестування"""
+        demo_news = [
+            {
+                "title": "Breaking: Bitcoin surges past $70,000 as institutional adoption grows",
+                "description": "Major investment firms increase their BTC holdings, signaling strong confidence in the cryptocurrency market.",
+                "url": "#",
+                "source": "Demo News",
+                "published_at": datetime.now()
+            },
+            {
+                "title": "Ethereum developers announce major network upgrade in Q3 2024",
+                "description": "The upgrade promises faster transactions and lower gas fees, potentially boosting ETH adoption.",
+                "url": "#",
+                "source": "Demo News",
+                "published_at": datetime.now()
+            },
+            {
+                "title": "Regulatory pressure mounts on major exchanges in the US",
+                "description": "New regulations could impact trading volumes and market liquidity in the coming months.",
+                "url": "#",
+                "source": "Demo News",
+                "published_at": datetime.now()
+            }
+        ]
+        return demo_news[:limit]
 
     def get_coin_from_news(self, text: str) -> Optional[str]:
         """Визначення криптовалюти з тексту новини"""
@@ -169,7 +198,7 @@ class NewsTrader:
         for name, pair in coins.items():
             if name in text_lower:
                 return pair
-        return None
+        return "BTCUSDT"  # За замовчуванням
 
     def execute_trade(self, db: Session, news: Dict, pair: str, side: str, sentiment_score: float):
         """Виконання угоди на основі новини"""
@@ -201,7 +230,7 @@ class NewsTrader:
 
         # Блокуємо кошти
         new_balance = balance - position_usdt
-        self.update_balance(db, new_balance, 0)  # Тимчасово оновлюємо баланс
+        self.update_balance(db, new_balance, 0)
 
         # Створюємо угоду
         trade = NewsTrade(
@@ -224,8 +253,7 @@ class NewsTrader:
         db.commit()
 
         logger.info(f"📰 НОВИНА: {news.get('title', '')[:100]}...")
-        logger.info(
-            f"🎯 Угода: {side} {pair} | {quantity} @ ${current_price:.2f} | ${position_usdt:.2f} | Впевненість: {abs(sentiment_score) * 100:.0f}%")
+        logger.info(f"🎯 Угода: {side} {pair} | {quantity:.6f} @ ${current_price:.2f} | ${position_usdt:.2f} | Впевненість: {abs(sentiment_score) * 100:.0f}%")
 
         return trade
 
@@ -260,15 +288,15 @@ class NewsTrader:
         trade.pnl_percent = pnl_percent
         trade.status = "closed"
 
-        # Оновлюємо баланс (повертаємо кошти + прибуток/збиток)
+        # Оновлюємо баланс
         balance = self.get_balance(db)
         new_balance = balance + trade.position_usdt + pnl
         self.update_balance(db, new_balance, pnl)
 
         db.commit()
 
-        logger.info(
-            f"🔒 Угоду закрито: {trade.side} {trade.pair} | PnL: ${pnl:.2f} ({pnl_percent:.1f}%) | Причина: {reason}")
+        emoji = "✅" if pnl > 0 else "❌"
+        logger.info(f"{emoji} Угоду закрито: {trade.side} {trade.pair} | PnL: ${pnl:.2f} ({pnl_percent:.1f}%) | Причина: {reason}")
 
     async def process_news(self):
         """Обробка новин та створення угод"""
@@ -299,14 +327,10 @@ class NewsTrader:
                 text = f"{news.get('title', '')} {news.get('description', '')}"
                 pair = self.get_coin_from_news(text)
 
-                if not pair:
-                    # Якщо не визначили - використовуємо BTCUSDT
-                    pair = "BTCUSDT"
-
                 # Перевіряємо ліміт угод за день
                 today = datetime.now().date()
                 trades_today = db.query(NewsTrade).filter(
-                    NewsTrade.entry_time >= today
+                    NewsTrade.entry_time >= datetime(today.year, today.month, today.day)
                 ).count()
 
                 if trades_today >= self.max_trades_per_day:
@@ -315,14 +339,13 @@ class NewsTrader:
 
                 # Перевіряємо чи є відкриті позиції
                 open_trades = db.query(NewsTrade).filter(NewsTrade.status == "open").count()
-                if open_trades >= 3:  # максимум 3 одночасні угоди
+                if open_trades >= 3:
                     logger.debug("Забагато відкритих позицій")
                     continue
 
                 # Виконуємо угоду
                 self.execute_trade(db, news, pair, side, sentiment_score)
 
-                # Невелика затримка між угодами
                 await asyncio.sleep(1)
 
         except Exception as e:
@@ -346,14 +369,13 @@ class NewsTrader:
         """Головний цикл новинної стратегії"""
         logger.info("📰 Новиний трейдер запущено")
 
+        if not self.api_key:
+            logger.warning("⚠️ Новинна стратегія працює в ДЕМО-режимі (без реальних новин)")
+
         while self.running:
             try:
-                # Обробка новин кожні 5 хвилин
                 await self.process_news()
-
-                # Перевірка відкритих угод кожну хвилину
                 await self.check_open_trades()
-
                 await asyncio.sleep(300)  # 5 хвилин
 
             except Exception as e:

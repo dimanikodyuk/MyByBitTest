@@ -184,20 +184,25 @@ class NewsTrade(Base):
     __tablename__ = "news_trades"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    news_id = Column(String(100), nullable=True)  # ДОДАТИ ЦЕ ПОЛЕ
     title = Column(String(500), nullable=True)
+    content = Column(Text, nullable=True)
+    source = Column(String(100), nullable=True)
+    published_at = Column(DateTime, nullable=True)
     pair = Column(String(20), nullable=False)
     side = Column(String(10), nullable=False)
     sentiment_score = Column(Float, default=0.0)
+    confidence = Column(Float, default=0.0)
     entry_price = Column(Float, nullable=False)
+    entry_time = Column(DateTime, nullable=False)
     exit_price = Column(Float, nullable=True)
+    exit_time = Column(DateTime, nullable=True)
     quantity = Column(Float, nullable=False)
     position_usdt = Column(Float, nullable=False)
     pnl = Column(Float, default=0.0)
     pnl_percent = Column(Float, default=0.0)
     status = Column(String(20), default="open")
     exit_reason = Column(String(100), nullable=True)
-    entry_time = Column(DateTime, server_default=func.now())
-    exit_time = Column(DateTime, nullable=True)
 
     __table_args__ = (
         Index('idx_news_trades_status', 'status'),
@@ -227,16 +232,18 @@ class ListingTrade(Base):
     symbol = Column(String(50), nullable=False)
     pair = Column(String(50), nullable=False)
     exchange = Column(String(20), default="bybit")
+    listing_time = Column(DateTime, nullable=True)  # ДОДАТИ
+    announcement_url = Column(String(500), nullable=True)  # ДОДАТИ
     entry_price = Column(Float, nullable=False)
+    entry_time = Column(DateTime, nullable=False)
     exit_price = Column(Float, nullable=True)
+    exit_time = Column(DateTime, nullable=True)
     quantity = Column(Float, nullable=False)
     position_usdt = Column(Float, nullable=False)
     pnl = Column(Float, default=0.0)
     pnl_percent = Column(Float, default=0.0)
     status = Column(String(20), default="open")
     exit_reason = Column(String(100), nullable=True)
-    entry_time = Column(DateTime, server_default=func.now())
-    exit_time = Column(DateTime, nullable=True)
 
     __table_args__ = (
         Index('idx_listing_trades_status', 'status'),

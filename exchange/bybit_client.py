@@ -219,6 +219,19 @@ class BybitClient:
             logger.error(f"Error getting order status: {e}")
             return None
 
+    def get_all_tickers(self) -> List[Dict]:
+        """Отримання всіх тикерів з Bybit"""
+        try:
+            response = self.session.get_tickers(category="spot")
+            if response and response.get('retCode') == 0:
+                result = response.get('result', {})
+                tickers = result.get('list', [])
+                return [{'symbol': t['symbol'], 'price': float(t['lastPrice'])} for t in tickers]
+            return []
+        except Exception as e:
+            logger.error(f"Помилка отримання тикерів: {e}")
+            return []
+
     def wait_for_order_fill(self, symbol: str, order_id: str, timeout: int = 10) -> bool:
         """Очікування виконання ордера"""
         start = time.time()
@@ -374,6 +387,7 @@ class BybitClient:
     def _on_error(self, ws, error, topic: str):
         """Обробник помилок WebSocket"""
         logger.error(f"WebSocket error for {topic}: {error}")
+
 
     def _on_close(self, ws, close_status_code, close_msg, topic: str):
         """Обробник закриття WebSocket"""
