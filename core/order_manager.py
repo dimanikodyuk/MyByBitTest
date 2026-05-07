@@ -14,6 +14,9 @@ from exchange.bybit_client import BybitClient
 from utils.config_loader import config
 from utils.logger import logger
 from sqlalchemy import func
+from core.news_strategy import NewsTradingEngine
+from core.listing_strategy import ListingTradingEngine
+
 
 class OrderManager:
     """Головний менеджер ордерів — приймає сигнали та виконує угоди"""
@@ -45,6 +48,16 @@ class OrderManager:
 
         self._init_strategies()
         self._load_initial_data()
+
+        # Ініціалізація додаткових стратегій
+        self.news_strategy = None
+        self.listing_strategy = None
+
+        if config.get('news_strategy.enabled', True):
+            self.news_strategy = NewsTradingEngine(self)
+
+        if config.get('listing_strategy.enabled', True):
+            self.listing_strategy = ListingTradingEngine(self)
 
         logger.info(f"✅ OrderManager ініціалізовано для {len(self.pairs)} пар, базовий TF: {self.base_timeframe}")
 
@@ -268,6 +281,22 @@ class OrderManager:
 
     def stop(self):
         self.running = False
+
+        # Зупинка додаткових стратегій
+        if hasattr(self, 'news_trader') and self.news_trader:
+            try:
+                self.news_trader.stop()
+                logger.info("📰 Новиний трейдер зупинено")
+            except Exception as e:
+                logger.error(f"Помилка зупинки новинного трейдера: {e}")
+
+        if hasattr(self, 'listing_monitor') and self.listing_monitor:
+            try:
+                self.listing_monitor.stop()
+                logger.info("🆕 Монітор нових лістингів зупинено")
+            except Exception as e:
+                logger.error(f"Помилка зупинки монітора лістингів: {e}")
+
         logger.info("🛑 OrderManager зупинено")
 
     def _check_signals_sync(self, pair: str):
@@ -753,10 +782,33 @@ class OrderManager:
             retention_days = config.get('database.log_retention_days', 7)
             self.db.cleanup_old_logs(retention_days)
 
+    # У файлі core/order_manager.py, в методі run (приблизно після рядка з logger.info("🔄 OrderManager основний цикл запущено"))
+
     async def run(self):
         """Головний цикл"""
         self.start_time = datetime.now()
         logger.info("🔄 OrderManager основний цикл запущено")
+
+        # ========== ЗАПУСК ДОДАТКОВИХ СТРАТЕГІЙ ==========
+        # Запуск новинного трейдера
+        if config.get('news_trading.enabled', True):
+            try:
+                from core.news_trader import NewsTrader
+                self.news_trader = NewsTrader()
+                asyncio.create_task(self.news_trader.run())
+                logger.info("📰 Новиний трейдер запущено")
+            except Exception as e:
+                logger.error(f"Помилка запуску новинного трейдера: {e}")
+
+        # Запуск монітора нових лістингів
+        if config.get('listing_trading.enabled', True):
+            try:
+                from core.listing_monitor import ListingMonitor
+                self.listing_monitor = ListingMonitor()
+                asyncio.create_task(self.listing_monitor.run())
+                logger.info("🆕 Монітор нових лістингів запущено")
+            except Exception as e:
+                logger.error(f"Помилка запуску монітора лістингів: {e}")
 
         last_price_update = datetime.now()
         last_analysis_minute = -1
@@ -780,7 +832,6 @@ class OrderManager:
                     last_analysis_minute = current_minute
                     for pair in self.pairs:
                         try:
-                            # Оновлюємо дані перед аналізом
                             df = self.exchange.get_klines(pair, self.base_timeframe, limit=300)
                             if df is not None and len(df) > 0:
                                 df = self.strategies[pair].calculate_indicators(df)
@@ -790,9 +841,7 @@ class OrderManager:
                             analysis = self.analyze_market(pair)
                             if analysis.get('forecast') and analysis.get('confidence', 0) > 65:
                                 logger.info(
-                                    f"📈 ПРОГНОЗ: {pair} {analysis['forecast']} "
-                                    f"впевн.{analysis['confidence']:.0f}%"
-                                )
+                                    f"📈 ПРОГНОЗ: {pair} {analysis['forecast']} впевн.{analysis['confidence']:.0f}%")
                         except Exception as e:
                             logger.debug(f"Помилка аналізу {pair}: {e}")
 

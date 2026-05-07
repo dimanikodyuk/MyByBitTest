@@ -95,13 +95,12 @@ trading:
     timezone: Europe/Kiev
 
 news_trading:
-  enabled: true
-  initial_balance: 100.0
-  position_percent: 25.0
-  hold_minutes: 60  # тримати позицію 60 хвилин
-  max_trades_per_day: 10
-  # Ключові слова для позитивних новин
-  bullish_keywords:
+  enabled: true                    # Ввімкнути/вимкнути
+  initial_balance: 100.0           # Початковий баланс
+  position_percent: 25.0           # % від балансу на угоду
+  hold_minutes: 60                 # Час утримання позиції (хв)
+  max_trades_per_day: 10           # Максимум угод на день
+  bullish_keywords:                # Ключові слова для LONG
     - "partnership"
     - "integration"
     - "listing"
@@ -112,8 +111,7 @@ news_trading:
     - "acquisition"
     - "mainnet"
     - "futures"
-  # Ключові слова для негативних новин
-  bearish_keywords:
+  bearish_keywords:                # Ключові слова для SHORT
     - "hack"
     - "exploit"
     - "delay"
@@ -124,15 +122,35 @@ news_trading:
     - "investigation"
     - "vulnerability"
 
+# Налаштування монітора нових лістингів
 listing_trading:
-  enabled: true
-  initial_balance: 100.0
-  position_percent: 25.0
-  hold_minutes: 30  # тримати позицію 30 хвилин
-  max_trades_per_day: 5
-  # Параметри виходу
-  take_profit_percent: 50.0  # Прибуток 50% - продати
-  stop_loss_percent: 20.0    # Збиток 20% - продати
+  enabled: true                    # Ввімкнути/вимкнути
+  initial_balance: 100.0           # Початковий баланс
+  position_percent: 25.0           # % від балансу на угоду
+  hold_minutes: 30                 # Час утримання позиції (хв)
+  max_trades_per_day: 5            # Максимум угод на день
+  take_profit_percent: 50.0        # Тейк-профіт (%)
+  stop_loss_percent: 20.0          # Стоп-лос (%)
+
+news_strategy:
+  enabled: true                    # Ввімкнути/вимкнути
+  position_percent: 5.0            # % від балансу на одну угоду
+  max_position_usdt: 100.0         # Максимальна сума в USDT
+  hold_minutes: 30                 # Час утримання позиції (хвилин)
+  take_profit_percent: 5.0         # Тейк-профіт (%)
+  stop_loss_percent: 3.0           # Стоп-лос (%)
+  min_sentiment_score: 0.6         # Мінімальна тональність для входу
+  min_relevance_score: 0.5         # Мінімальна релевантність новини
+
+# Стратегія нових монет (лістингів)
+listing_strategy:
+  enabled: true                    # Ввімкнути/вимкнути
+  position_percent: 3.0            # % від балансу на одну угоду
+  max_position_usdt: 50.0          # Максимальна сума в USDT
+  take_profit_percent: 20.0        # Тейк-профіт (%)
+  stop_loss_percent: 10.0          # Стоп-лос (%)
+  hold_minutes: 120                # Час утримання позиції (хвилин)
+  min_liquidity_score: 0.3         # Мінімальна ліквідність (0-1)
 
 web:
   enable_charts: true

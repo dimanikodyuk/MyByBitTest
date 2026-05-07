@@ -1405,6 +1405,66 @@ async def delete_backtest(backtest_id: int):
     finally:
         db.close()
 
+# ==================== API ДЛЯ КЕРУВАННЯ СТРАТЕГІЯМИ ====================
+
+@app.get("/api/strategy/news/status")
+async def get_news_strategy_status():
+    """Отримання статусу новинної стратегії"""
+    if order_manager_ref and order_manager_ref.news_strategy:
+        return {
+            "enabled": True,
+            "running": order_manager_ref.news_strategy.running,
+            "position_percent": order_manager_ref.news_strategy.position_percent,
+            "hold_minutes": order_manager_ref.news_strategy.hold_minutes
+        }
+    return {"enabled": False}
+
+@app.post("/api/strategy/news/start")
+async def start_news_strategy():
+    """Запуск новинної стратегії"""
+    if order_manager_ref and order_manager_ref.news_strategy:
+        order_manager_ref.news_strategy.running = True
+        asyncio.create_task(order_manager_ref.news_strategy.run())
+        return {"status": "started"}
+    return {"error": "Strategy not available"}
+
+@app.post("/api/strategy/news/stop")
+async def stop_news_strategy():
+    """Зупинка новинної стратегії"""
+    if order_manager_ref and order_manager_ref.news_strategy:
+        order_manager_ref.news_strategy.stop()
+        return {"status": "stopped"}
+    return {"error": "Strategy not available"}
+
+@app.get("/api/strategy/listing/status")
+async def get_listing_strategy_status():
+    """Отримання статусу стратегії нових монет"""
+    if order_manager_ref and order_manager_ref.listing_strategy:
+        return {
+            "enabled": True,
+            "running": order_manager_ref.listing_strategy.running,
+            "position_percent": order_manager_ref.listing_strategy.position_percent,
+            "hold_minutes": order_manager_ref.listing_strategy.hold_minutes
+        }
+    return {"enabled": False}
+
+@app.post("/api/strategy/listing/start")
+async def start_listing_strategy():
+    """Запуск стратегії нових монет"""
+    if order_manager_ref and order_manager_ref.listing_strategy:
+        order_manager_ref.listing_strategy.running = True
+        asyncio.create_task(order_manager_ref.listing_strategy.run())
+        return {"status": "started"}
+    return {"error": "Strategy not available"}
+
+@app.post("/api/strategy/listing/stop")
+async def stop_listing_strategy():
+    """Зупинка стратегії нових монет"""
+    if order_manager_ref and order_manager_ref.listing_strategy:
+        order_manager_ref.listing_strategy.stop()
+        return {"status": "stopped"}
+    return {"error": "Strategy not available"}
+
 # ==================== НОВИННА ТОРГІВЛЯ ====================
 
 @app.get("/api/news/balance")
