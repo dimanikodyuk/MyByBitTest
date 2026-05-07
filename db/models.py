@@ -133,11 +133,11 @@ class ForecastDB(Base):
     target_price = Column(Float, nullable=False)
     current_price = Column(Float, nullable=False)
     confidence = Column(Float, default=70)
-    status = Column(String(20), default="active")
+    status = Column(String(20), default="active")  # active, expired, completed, cancelled
     created_at = Column(DateTime, server_default=func.now())
     expires_at = Column(DateTime, nullable=False)
     closed_at = Column(DateTime, nullable=True)
-    result = Column(String(50), nullable=True)
+    result = Column(String(50), nullable=True)  # hit, miss, partial
     position_quantity = Column(Float, default=0.0)
     position_usdt = Column(Float, default=0.0)
     current_pnl = Column(Float, default=0.0)
@@ -145,10 +145,20 @@ class ForecastDB(Base):
     description = Column(Text, nullable=True)
     indicators_snapshot = Column(Text, nullable=True)
 
+    # НОВІ ПОЛЯ ДЛЯ АНАЛІТИКИ
+    max_price_reached = Column(Float, nullable=True)  # максимальна ціна досягнута під час прогнозу
+    min_price_reached = Column(Float, nullable=True)  # мінімальна ціна досягнута під час прогнозу
+    target_hit_time = Column(DateTime, nullable=True)  # коли досягнуто цілі
+    hit_percentage = Column(Float, default=0.0)  # на скільки % досягнуто цілі (0-100)
+    actual_profit_pct = Column(Float, default=0.0)  # фактичний прибуток/збиток при закритті
+    quality_score = Column(Float, default=0.0)  # оцінка якості прогнозу (0-100)
+
     __table_args__ = (
         Index('idx_forecasts_pair_status', 'pair', 'status'),
         Index('idx_forecasts_created_at', 'created_at'),
         Index('idx_forecasts_expires_at', 'expires_at'),
+        Index('idx_forecasts_result', 'result'),  # НОВИЙ ІНДЕКС
+        Index('idx_forecasts_quality', 'quality_score'),  # НОВИЙ ІНДЕКС
     )
 
 

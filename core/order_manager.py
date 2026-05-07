@@ -16,7 +16,7 @@ from utils.logger import logger
 from sqlalchemy import func
 from core.news_strategy import NewsTradingEngine
 from core.listing_strategy import ListingTradingEngine
-
+from web.app import broadcast_notification
 
 class OrderManager:
     """Головний менеджер ордерів — приймає сигнали та виконує угоди"""
@@ -493,6 +493,19 @@ class OrderManager:
                 'stop_loss': sl_price
             })
 
+            # Відправка WebSocket сповіщення
+            asyncio.create_task(broadcast_notification("trade_opened", {
+                "trade": {
+                    "id": result['trade_id'],
+                    "pair": pair,
+                    "side": signal_type,
+                    "entry_price": current_price,
+                    "take_profit": tp_price,
+                    "stop_loss": sl_price,
+                    "quantity": quantity
+                }
+            }))
+
             logger.info(f"✅ [{pair}] {signal_type} відкрито: {quantity:.6f} @ {result['execution_price']:.4f} | "
                         f"TP={tp_price:.4f} SL={sl_price:.4f} | RR={rr_ratio:.2f}")
 
@@ -789,6 +802,18 @@ class OrderManager:
             if should_exit:
                 result = self.paper_engine.execute_sell(trade.id, current_price)
                 if result:
+                    # Відправка WebSocket сповіщення
+                    asyncio.create_task(broadcast_notification("trade_closed", {
+                        "trade": {
+                            "id": trade.id,
+                            "pair": trade.pair,
+                            "side": trade.side.value,
+                            "pnl": result['pnl'],
+                            "pnl_percent": result['pnl_percent'],
+                            "exit_reason": exit_reason
+                        }
+                    }))
+
                     logger.info(f"💰 [{pair}] Закрито: {exit_reason} | PnL={result['pnl']:.4f} USDT")
                     self.record_trade_close(pair, result['pnl'])
 
@@ -856,6 +881,16 @@ class OrderManager:
             except Exception as e:
                 logger.error(f"Помилка запуску монітора лістингів: {e}")
         # ===============================
+
+        # ===== АНАЛІЗАТОР ПРОГНОЗІВ ====
+        try:
+            from core.forecast_analyzer import ForecastAnalyzer
+            self.forecast_analyzer = ForecastAnalyzer()
+            asyncio.create_task(self.forecast_analyzer.run())
+            logger.info("📊 Аналізатор прогнозів запущено")
+        except Exception as e:
+            logger.error(f"Помилка запуску аналізатора прогнозів: {e}")
+
 
         last_price_update = datetime.now()
         last_analysis_minute = -1

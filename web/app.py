@@ -722,6 +722,19 @@ async def websocket_endpoint(websocket: WebSocket):
         if websocket in active_websockets:
             active_websockets.remove(websocket)
 
+# Функція для відправки сповіщень всім підключеним клієнтам
+async def broadcast_notification(notification_type: str, data: dict):
+    """Відправка сповіщення всім підключеним WebSocket клієнтам"""
+    for ws in active_websockets[:]:
+        try:
+            await ws.send_json({
+                "type": notification_type,
+                **data
+            })
+        except Exception as e:
+            logger.debug(f"WebSocket send error: {e}")
+            if ws in active_websockets:
+                active_websockets.remove(ws)
 
 @app.get("/api/patterns/{pair}")
 async def get_candle_patterns(pair: str, timeframe: str = "1h"):
@@ -1978,6 +1991,61 @@ async def clear_logs():
     finally:
         db.close()
 
+
+@app.get("/api/forecasts/stats")
+async def get_forecast_statistics():
+    """Отримання статистики прогнозів"""
+    from core.forecast_analyzer import ForecastAnalyzer
+    analyzer = ForecastAnalyzer()
+    stats = await analyzer.get_forecast_statistics()
+    return stats
+
+
+@app.get("/api/forecasts/analysis/{forecast_id}")
+async def get_forecast_analysis(forecast_id: str):
+    """Детальний аналіз конкретного прогнозу"""
+    db = SessionLocal()
+    try:
+        fid = safe_parse_forecast_id(forecast_id)
+        forecast = db.query(ForecastDB).filter(ForecastDB.forecast_id == fid).first()
+
+        if not forecast:
+            raise HTTPException(status_code=404, detail="Прогноз не знайдено")
+
+        # Розраховуємо додаткову аналітику
+        analysis = {
+            "id": forecast.forecast_id,
+            "pair": forecast.pair,
+            "signal_type": forecast.signal_type,
+            "entry_price": forecast.entry_price,
+            "target_price": forecast.target_price,
+            "max_price_reached": forecast.max_price_reached,
+            "min_price_reached": forecast.min_price_reached,
+            "hit_percentage": forecast.hit_percentage,
+            "quality_score": forecast.quality_score,
+            "confidence": forecast.confidence,
+            "result": forecast.result,
+            "status": forecast.status,
+            "created_at": make_aware(forecast.created_at).isoformat(),
+            "expires_at": make_aware(forecast.expires_at).isoformat(),
+            "target_hit_time": make_aware(forecast.target_hit_time).isoformat() if forecast.target_hit_time else None,
+            "actual_profit_pct": forecast.actual_profit_pct,
+            "current_pnl": forecast.current_pnl,
+        }
+
+        # Додаємо індикатори, якщо вони є
+        if forecast.indicators_snapshot:
+            try:
+                analysis["indicators"] = json.loads(forecast.indicators_snapshot)
+            except:
+                analysis["indicators"] = None
+
+        return analysis
+
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Невірний ID прогнозу")
+    finally:
+        db.close()
 
 @app.post("/api/reset")
 async def reset_paper_trading():

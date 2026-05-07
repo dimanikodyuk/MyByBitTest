@@ -1,24 +1,48 @@
-# remove_test_coin.py
-from db.database import SessionLocal
-from db.models import ListingTrade, ListingBalance
+# update_forecast_db.py - запустити один раз
 
-db = SessionLocal()
+from db.database import engine, SessionLocal
+from sqlalchemy import text
 
-# Видаляємо тестові угоди
-deleted = db.query(ListingTrade).filter(
-    (ListingTrade.symbol == 'TEST') | (ListingTrade.pair == 'TESTUSDT')
-).delete()
-print(f"Видалено {deleted} тестових угод")
 
-# Скидаємо баланс (опціонально)
-balance = db.query(ListingBalance).first()
-if balance:
-    balance.amount = 100.0
-    balance.total_pnl = 0
-    balance.total_trades = 0
-    balance.win_trades = 0
-    print("Баланс скинуто до $100")
+def update_forecasts_table():
+    db = SessionLocal()
+    try:
+        # Отримуємо список існуючих колонок
+        result = db.execute(text("PRAGMA table_info(forecasts)")).fetchall()
+        columns = [col[1] for col in result]
 
-db.commit()
-db.close()
-print("Готово!")
+        # Додаємо нові колонки, якщо їх немає
+        new_columns = [
+            ("max_price_reached", "FLOAT"),
+            ("min_price_reached", "FLOAT"),
+            ("target_hit_time", "DATETIME"),
+            ("hit_percentage", "FLOAT DEFAULT 0.0"),
+            ("actual_profit_pct", "FLOAT DEFAULT 0.0"),
+            ("quality_score", "FLOAT DEFAULT 0.0")
+        ]
+
+        for col_name, col_type in new_columns:
+            if col_name not in columns:
+                print(f"Додаємо колонку {col_name}...")
+                db.execute(text(f"ALTER TABLE forecasts ADD COLUMN {col_name} {col_type}"))
+                db.commit()
+                print(f"✅ Колонку {col_name} додано")
+            else:
+                print(f"ℹ️ Колонка {col_name} вже існує")
+
+        # Додаємо індекси
+        db.execute(text("CREATE INDEX IF NOT EXISTS idx_forecasts_result ON forecasts(result)"))
+        db.execute(text("CREATE INDEX IF NOT EXISTS idx_forecasts_quality ON forecasts(quality_score)"))
+        db.commit()
+
+        print("✅ Оновлення таблиці forecasts завершено!")
+
+    except Exception as e:
+        print(f"❌ Помилка: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
+if __name__ == "__main__":
+    update_forecasts_table()
